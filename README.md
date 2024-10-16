@@ -56,10 +56,11 @@ This setup is designed for learning and testing purposes, particularly for CKA e
 ## Troubleshooting
 
 If you encounter issues with kubectl not being able to connect to the cluster, you may need to manually set up the kubeconfig file on the control plane node. SSH into the control plane node and run the following commands:
+'''
 mkdir -p $HOME/.kube
 sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
 sudo chown $(id -u):$(id -g) $HOME/.kube/config
-
+'''
 
 This will create the .kube directory, copy the admin.conf file to it, and set the correct permissions. After running these commands, kubectl should be able to communicate with the cluster.
 
