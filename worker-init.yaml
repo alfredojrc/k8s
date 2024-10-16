@@ -1,0 +1,70 @@
+#cloud-config
+package_update: true
+package_upgrade: true
+
+packages:
+  - apt-transport-https
+  - ca-certificates
+  - curl
+  - gnupg
+  - lsb-release
+
+runcmd:
+  - echo "Starting worker node initialization" >> /var/log/cloud-init-output.log
+  # Disable swap
+  - sudo swapoff -a
+  - sudo sed -i '/ swap / s/^\(.*\)$/#\1/g' /etc/fstab
+
+  # Enable IP forwarding
+  - echo "net.ipv4.ip_forward=1" | sudo tee -a /etc/sysctl.conf
+  - sudo sysctl -p
+
+  # Add Docker repository
+  - curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+  - echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+  # Add Kubernetes v1.31 repository
+  # Note: As of October 2024, Kubernetes 1.31 is the version used in the CKA exam.
+  # This version is chosen to align with the exam requirements.
+  # Reference: https://training.linuxfoundation.org/certification/certified-kubernetes-administrator-cka/
+  # Always check the latest exam curriculum for the most up-to-date version information.
+  - curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.31/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+  - echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.31/deb/ /' | sudo tee /etc/apt/sources.list.d/kubernetes.list
+
+  # Update package list
+  - sudo apt-get update
+
+  # Install Docker and Kubernetes packages
+  - sudo apt-get install -y docker-ce docker-ce-cli containerd.io kubelet kubeadm kubectl
+
+  # Hold Kubernetes packages at their installed version
+  - sudo apt-mark hold kubelet kubeadm kubectl
+
+  # Configure containerd
+  - sudo mkdir -p /etc/containerd
+  - containerd config default | sudo tee /etc/containerd/config.toml
+  - sudo sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
+  - sudo systemctl restart containerd
+
+  - echo "Packages installed" >> /var/log/cloud-init-output.log
+
+  # Wait for the first control plane to be ready and get the join command
+  - echo "Waiting for control-plane-1 to be ready..." >> /var/log/cloud-init-output.log
+  - timeout 900 bash -c 'until nc -z control-plane-1 8000; do sleep 10; echo "Still waiting for control-plane-1..." >> /var/log/cloud-init-output.log; done'
+  - echo "control-plane-1 is ready. Getting join command..." >> /var/log/cloud-init-output.log
+  - JOIN_COMMAND=$(nc control-plane-1 8000)
+  - echo "Join command received: $JOIN_COMMAND" >> /var/log/cloud-init-output.log
+  - echo "Executing join command..." >> /var/log/cloud-init-output.log
+  - timeout 600 bash -c '$JOIN_COMMAND >> /var/log/cloud-init-output.log 2>&1'
+  - echo "Join command executed" >> /var/log/cloud-init-output.log
+
+  # Label the node as a worker
+  - kubectl --kubeconfig=/etc/kubernetes/kubelet.conf label node $(hostname) node-role.kubernetes.io/worker=worker
+
+  - echo "Containerd configured" >> /var/log/cloud-init-output.log
+
+  - echo "Waiting 2 minutes before attempting to join..." >> /var/log/cloud-init-output.log
+  - sleep 120
+
+  - echo "Checking network connectivity..." >> /var/log/cloud-init-output.log
+  - ping -c 4 control-plane-1 >> /var/log/cloud-init-output.log 2>&1

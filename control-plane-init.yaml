@@ -1,0 +1,128 @@
+#cloud-config
+package_update: true
+package_upgrade: true
+
+packages:
+  - apt-transport-https
+  - ca-certificates
+  - curl
+  - gnupg
+  - lsb-release
+  - netcat
+
+write_files:
+  - path: /var/log/cloud-init-output.log
+    permissions: "0644"
+
+runcmd:
+  - echo "Starting initialization" >> /var/log/cloud-init-output.log
+
+  # Disable swap
+  - sudo swapoff -a
+  - sudo sed -i '/ swap / s/^\(.*\)$/#\1/g' /etc/fstab
+
+  # Enable IP forwarding
+  - echo "net.ipv4.ip_forward=1" | sudo tee -a /etc/sysctl.conf
+  - sudo sysctl -p
+
+  # Add Docker repository
+  - curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+  - echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+  # Add Kubernetes v1.31 repository
+  # Note: As of October 2024, Kubernetes 1.31 is the version used in the CKA exam.
+  - curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.31/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+  - echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.31/deb/ /' | sudo tee /etc/apt/sources.list.d/kubernetes.list
+
+  # Update package list
+  - sudo apt-get update
+  - echo "Package lists updated" >> /var/log/cloud-init-output.log
+
+  # Install Docker and Kubernetes packages
+  - sudo apt-get install -y docker-ce docker-ce-cli containerd.io kubelet kubeadm kubectl
+  - echo "Packages installed" >> /var/log/cloud-init-output.log
+
+  # Hold Kubernetes packages at their installed version
+  - sudo apt-mark hold kubelet kubeadm kubectl
+
+  # Configure containerd
+  - sudo mkdir -p /etc/containerd
+  - containerd config default | sudo tee /etc/containerd/config.toml
+  - sudo sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
+  - sudo systemctl restart containerd
+  - sudo systemctl status containerd >> /var/log/cloud-init-output.log
+  - echo "Containerd configured" >> /var/log/cloud-init-output.log
+
+  # Wait for system to settle
+  - sleep 30
+
+  # Initialize Kubernetes cluster
+  - sudo kubeadm init --pod-network-cidr=192.168.0.0/16 --v=5 >> /var/log/cloud-init-output.log 2>&1
+  - echo "Kubernetes initialized" >> /var/log/cloud-init-output.log
+
+  # Set up kubeconfig for the ubuntu user
+  - mkdir -p $HOME/.kube
+  - sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+  - sudo chown $(id -u):$(id -g) $HOME/.kube/config
+  - echo "Kubeconfig set up for ubuntu user" >> /var/log/cloud-init-output.log
+
+  # Ensure the correct permissions and ownership
+  - sudo chmod 644 /etc/kubernetes/admin.conf
+  - sudo chown root:root /etc/kubernetes/admin.conf
+
+  # Wait for API server to be ready
+  - timeout 900 bash -c 'until kubectl get nodes &>/dev/null; do sleep 10; echo "Waiting for API server..." >> /var/log/cloud-init-output.log; done'
+  - echo "API server is ready" >> /var/log/cloud-init-output.log
+
+  # Install Calico
+  - kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/v3.26.1/manifests/tigera-operator.yaml
+  - kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/v3.26.1/manifests/custom-resources.yaml
+  - echo "Calico installed" >> /var/log/cloud-init-output.log
+
+  # Generate join command for other nodes
+  - kubeadm token create --print-join-command > /home/ubuntu/join-command.sh
+  - chmod +x /home/ubuntu/join-command.sh
+
+  # Make join command accessible to other nodes
+  - nohup bash -c 'while true; do echo "$(cat /home/ubuntu/join-command.sh)" | nc -l -p 8000; done' &
+  - echo "Join command server started" >> /var/log/cloud-init-output.log
+
+  # Ensure kube-proxy is running
+  - kubectl get pods -n kube-system | grep kube-proxy
+  - echo "Kube-proxy status checked" >> /var/log/cloud-init-output.log
+
+  # Configure kube-proxy mode (if needed)
+  - |
+    kubectl -n kube-system get configmap kube-proxy -o yaml > kube-proxy-config.yaml
+    sed -i 's/mode: ""/mode: "ipvs"/' kube-proxy-config.yaml
+    kubectl apply -f kube-proxy-config.yaml
+    rm kube-proxy-config.yaml
+  - echo "Kube-proxy configured" >> /var/log/cloud-init-output.log
+  # Create sample deployment and service
+  - kubectl create deployment nginx --image=nginx
+  - kubectl expose deployment nginx --port=80 --type=NodePort
+
+  # Create scenarios for troubleshooting
+  - kubectl taint nodes control-plane-1 key1=value1:NoSchedule
+  - kubectl create deployment nginx-taint --image=nginx --replicas=3
+
+  # Set up monitoring
+  - kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+
+  # Additional CKA exam scenarios
+  - kubectl create configmap my-config --from-literal=key1=value1
+  - kubectl create secret generic my-secret --from-literal=username=admin --from-literal=password=secret
+  - kubectl apply -f https://k8s.io/examples/pods/storage/pv-volume.yaml
+  - kubectl apply -f https://k8s.io/examples/pods/storage/pv-claim.yaml
+
+  # Additional troubleshooting steps
+  - echo "Checking API server status" >> /var/log/cloud-init-output.log
+  - sudo crictl pods | grep kube-apiserver >> /var/log/cloud-init-output.log
+  - echo "Checking kubelet status" >> /var/log/cloud-init-output.log
+  - sudo systemctl status kubelet >> /var/log/cloud-init-output.log
+  - echo "Checking API server logs" >> /var/log/cloud-init-output.log
+  - sudo crictl logs $(sudo crictl pods | grep kube-apiserver | awk '{print $1}') >> /var/log/cloud-init-output.log
+  - echo "Checking kubeconfig" >> /var/log/cloud-init-output.log
+  - cat $HOME/.kube/config >> /var/log/cloud-init-output.log
+
+  - echo "Setup complete" >> /var/log/cloud-init-output.log

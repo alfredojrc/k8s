@@ -1,0 +1,37 @@
+#cloud-config
+packages:
+  - haproxy
+
+write_files:
+  - path: /etc/haproxy/haproxy.cfg
+    content: |
+      global
+        log /dev/log local0
+        log /dev/log local1 notice
+        daemon
+
+      defaults
+        log global
+        mode tcp
+        option tcplog
+        option dontlognull
+        timeout connect 5000
+        timeout client 50000
+        timeout server 50000
+
+      frontend kubernetes
+        bind *:6443
+        mode tcp
+        default_backend kubernetes-backend
+
+      backend kubernetes-backend
+        mode tcp
+        balance roundrobin
+        option tcp-check
+        server control-plane-1 control-plane-1:6443 check fall 3 rise 2
+        server control-plane-2 control-plane-2:6443 check fall 3 rise 2
+        server control-plane-3 control-plane-3:6443 check fall 3 rise 2
+
+runcmd:
+  - systemctl enable haproxy
+  - systemctl start haproxy
