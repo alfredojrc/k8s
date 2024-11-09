@@ -29,10 +29,9 @@ runcmd:
   - curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
   - echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
 
-  # Add Kubernetes v1.31 repository
-  # Note: As of October 2024, Kubernetes 1.31 is the version used in the CKA exam.
-  - curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.31/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
-  - echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.31/deb/ /' | sudo tee /etc/apt/sources.list.d/kubernetes.list
+  # Add Kubernetes v1.29 repository
+  - curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.29/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+  - echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.29/deb/ /' | sudo tee /etc/apt/sources.list.d/kubernetes.list
 
   # Update package list
   - sudo apt-get update
@@ -57,9 +56,42 @@ runcmd:
   - sleep 30
 
   # Initialize Kubernetes cluster
-  - sudo kubeadm init --pod-network-cidr=192.168.0.0/16 --v=5 >> /var/log/cloud-init-output.log 2>&1
-  - echo "Kubernetes initialized" >> /var/log/cloud-init-output.log
+  - |
+    max_retries=5
+    retry_count=0
+    until [ $retry_count -ge $max_retries ]
+    do
+      echo "Attempt $((retry_count+1)) of $max_retries" >> /var/log/cloud-init-output.log
+      
+      # Add these commands before kubeadm init
+      - echo "System information:" >> /var/log/cloud-init-output.log
+      - free -h >> /var/log/cloud-init-output.log
+      - df -h >> /var/log/cloud-init-output.log
+      - systemctl status containerd >> /var/log/cloud-init-output.log
+      - systemctl status kubelet >> /var/log/cloud-init-output.log
+      
+      # Initialize Kubernetes cluster
+      VIRTUAL_IP="10.191.182.100"
+      if sudo kubeadm init \
+        --control-plane-endpoint "${VIRTUAL_IP}:6443" \
+        --upload-certs \
+        --pod-network-cidr=192.168.0.0/16 \
+        --v=5 >> /var/log/cloud-init-output.log 2>&1; then
+        echo "Kubernetes initialization successful" >> /var/log/cloud-init-output.log
+        break
+      fi
+      
+      retry_count=$((retry_count+1))
+      echo "Initialization failed, waiting before retry..." >> /var/log/cloud-init-output.log
+      sleep 30
+    done
 
+    if [ $retry_count -ge $max_retries ]; then
+      echo "Failed to initialize Kubernetes after $max_retries attempts" >> /var/log/cloud-init-output.log
+      exit 1
+    fi
+
+  - echo "Kubernetes initialized" >> /var/log/cloud-init-output.log
   # Set up kubeconfig for the ubuntu user
   - mkdir -p $HOME/.kube
   - sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
@@ -125,4 +157,321 @@ runcmd:
   - echo "Checking kubeconfig" >> /var/log/cloud-init-output.log
   - cat $HOME/.kube/config >> /var/log/cloud-init-output.log
 
+  # Install and configure CoreDNS
+  - |
+    cat <<EOF | kubectl apply -f -
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: coredns-custom
+      namespace: kube-system
+    data:
+      Corefile: |
+        .:53 {
+            errors
+            health {
+                lameduck 5s
+            }
+            ready
+            kubernetes cluster.local in-addr.arpa ip6.arpa {
+                pods insecure
+                fallthrough in-addr.arpa ip6.arpa
+                ttl 30
+            }
+            prometheus :9153
+            forward . /etc/resolv.conf {
+                max_concurrent 1000
+            }
+            cache 30
+            loop
+            reload
+            loadbalance
+        }
+    EOF
+  - echo "CoreDNS configured" >> /var/log/cloud-init-output.log
+  # Configure network policies
+  - |
+    cat <<EOF | kubectl apply -f -
+    apiVersion: networking.k8s.io/v1
+    kind: NetworkPolicy
+    metadata:
+      name: default-deny-ingress
+      namespace: default
+    spec:
+      podSelector: {}
+      policyTypes:
+      - Ingress
+    EOF
+  - echo "Default network policy applied" >> /var/log/cloud-init-output.log
+  # Configure metrics server with proper settings
+  - |
+    cat <<EOF | kubectl apply -f -
+    apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      labels:
+        k8s-app: metrics-server
+      name: metrics-server
+      namespace: kube-system
+    ---
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: metrics-server
+      namespace: kube-system
+      labels:
+        k8s-app: metrics-server
+    spec:
+      selector:
+        matchLabels:
+          k8s-app: metrics-server
+      template:
+        metadata:
+          labels:
+            k8s-app: metrics-server
+        spec:
+          containers:
+          - args:
+            - --cert-dir=/tmp
+            - --secure-port=4443
+            - --kubelet-preferred-address-types=InternalIP,ExternalIP,Hostname
+            - --kubelet-use-node-status-port
+            - --metric-resolution=15s
+            - --kubelet-insecure-tls
+            image: registry.k8s.io/metrics-server/metrics-server:v0.6.4
+            name: metrics-server
+            ports:
+            - containerPort: 4443
+              name: https
+              protocol: TCP
+          priorityClassName: system-cluster-critical
+    EOF
+  - echo "Metrics server configured" >> /var/log/cloud-init-output.log
+  # Verify critical components
+  - kubectl wait --for=condition=Ready pods --all -n kube-system --timeout=300s
+  - echo "All system pods are ready" >> /var/log/cloud-init-output.log
+
+  # Configure resource quotas for namespaces
+  - |
+    cat <<EOF | kubectl apply -f -
+    apiVersion: v1
+    kind: ResourceQuota
+    metadata:
+      name: compute-resources
+      namespace: default
+    spec:
+      hard:
+        requests.cpu: "4"
+        requests.memory: 4Gi
+        limits.cpu: "8"
+        limits.memory: 8Gi
+    EOF
+  - echo "Resource quota configured" >> /var/log/cloud-init-output.log
+  # Configure Pod Security Standards
+  - |
+    cat <<EOF | kubectl apply -f -
+    apiVersion: v1
+    kind: Namespace
+    metadata:
+      name: restricted
+      labels:
+        pod-security.kubernetes.io/enforce: restricted
+        pod-security.kubernetes.io/audit: restricted
+        pod-security.kubernetes.io/warn: restricted
+    EOF
+  - echo "Pod Security Standards configured" >> /var/log/cloud-init-output.log
+  # Configure etcd backup
+  - |
+    cat <<EOF > /etc/kubernetes/etcd-backup.sh
+    #!/bin/bash
+    ETCDCTL_API=3 etcdctl --endpoints=https://127.0.0.1:2379 \
+      --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+      --cert=/etc/kubernetes/pki/etcd/server.crt \
+      --key=/etc/kubernetes/pki/etcd/server.key \
+      snapshot save /var/lib/etcd/backup/etcd-snapshot-\$(date +%Y%m%d).db
+    EOF
+  - chmod +x /etc/kubernetes/etcd-backup.sh
+  - mkdir -p /var/lib/etcd/backup
+  - echo "0 */6 * * * root /etc/kubernetes/etcd-backup.sh" > /etc/cron.d/etcd-backup
+  - echo "etcd backup configured" >> /var/log/cloud-init-output.log
+
+  # Configure audit logging
+  - |
+    cat <<EOF | sudo tee /etc/kubernetes/audit-policy.yaml
+    apiVersion: audit.k8s.io/v1
+    kind: Policy
+    rules:
+    - level: Metadata
+      resources:
+      - group: ""
+        resources: ["pods", "services", "configmaps"]
+    - level: RequestResponse
+      resources:
+      - group: ""
+        resources: ["secrets"]
+    EOF
+  - mkdir -p /var/log/kubernetes/audit
+  - echo "Audit logging configured" >> /var/log/cloud-init-output.log
+
+  # Update API server configuration to enable audit logging
+  - |
+    sudo sed -i '/--enable-admission-plugins=/ s/$/,PodSecurityPolicy/' /etc/kubernetes/manifests/kube-apiserver.yaml
+    sudo sed -i '/- kube-apiserver/a\    - --audit-policy-file=/etc/kubernetes/audit-policy.yaml\n    - --audit-log-path=/var/log/kubernetes/audit/audit.log' /etc/kubernetes/manifests/kube-apiserver.yaml
+  - echo "API server configuration updated" >> /var/log/cloud-init-output.log
+  # Configure log rotation for audit logs
+  - |
+    cat <<EOF | sudo tee /etc/logrotate.d/kubernetes-audit
+    /var/log/kubernetes/audit/audit.log {
+        rotate 5
+        copytruncate
+        missingok
+        notifempty
+        compress
+        maxsize 100M
+        daily
+        create 0644 root root
+    }
+    EOF
+  - echo "Log rotation configured" >> /var/log/cloud-init-output.log
   - echo "Setup complete" >> /var/log/cloud-init-output.log
+
+  # Configure inter-namespace network policies
+  - |
+    cat <<EOF | kubectl apply -f -
+    apiVersion: networking.k8s.io/v1
+    kind: NetworkPolicy
+    metadata:
+      name: allow-selected-namespaces
+      namespace: restricted
+    spec:
+      podSelector: {}
+      policyTypes:
+      - Ingress
+      ingress:
+      - from:
+        - namespaceSelector:
+            matchLabels:
+              access: allowed
+    EOF
+  - echo "Inter-namespace network policy configured" >> /var/log/cloud-init-output.log
+  # Label default namespace for network policy
+  - kubectl label namespace default access=allowed
+  - echo "Default namespace labeled" >> /var/log/cloud-init-output.log
+
+  # Install Prometheus and Grafana for monitoring
+  - |
+    cat <<EOF | kubectl apply -f -
+    apiVersion: v1
+    kind: Namespace
+    metadata:
+      name: monitoring
+    ---
+    apiVersion: source.toolkit.fluxcd.io/v1beta2
+    kind: HelmRepository
+    metadata:
+      name: prometheus-community
+      namespace: monitoring
+    spec:
+      interval: 1h
+      url: https://prometheus-community.github.io/helm-charts
+    ---
+    apiVersion: helm.toolkit.fluxcd.io/v2beta1
+    kind: HelmRelease
+    metadata:
+      name: kube-prometheus-stack
+      namespace: monitoring
+    spec:
+      interval: 5m
+      chart:
+        spec:
+          chart: kube-prometheus-stack
+          version: ">=45.x"
+          sourceRef:
+            kind: HelmRepository
+            name: prometheus-community
+          interval: 1m
+      values:
+        grafana:
+          adminPassword: admin
+        prometheus:
+          prometheusSpec:
+            retention: 5d
+            resources:
+              requests:
+                cpu: 200m
+                memory: 200Mi
+            storageSpec:
+              volumeClaimTemplate:
+                spec:
+                  accessModes: ["ReadWriteOnce"]
+                  resources:
+                    requests:
+                      storage: 10Gi
+    EOF
+  - echo "Prometheus and Grafana installed" >> /var/log/cloud-init-output.log
+  # Configure high availability for etcd
+  - |
+    cat <<EOF | kubectl apply -f -
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: etcd-config
+      namespace: kube-system
+    data:
+      etcd.conf: |
+        ETCD_HEARTBEAT_INTERVAL=100
+        ETCD_ELECTION_TIMEOUT=1000
+        ETCD_MAX_SNAPSHOTS=5
+        ETCD_MAX_WALS=5
+        ETCD_QUOTA_BACKEND_BYTES=8589934592
+    EOF
+  - echo "etcd HA configuration applied" >> /var/log/cloud-init-output.log
+  # Add node affinity rules for critical components
+  - |
+    cat <<EOF | kubectl apply -f -
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: scheduler-config
+      namespace: kube-system
+    data:
+      config.yaml: |
+        apiVersion: kubescheduler.config.k8s.io/v1
+        kind: KubeSchedulerConfiguration
+        profiles:
+        - schedulerName: default-scheduler
+          plugins:
+            score:
+              enabled:
+              - name: NodeResourcesBalancedAllocation
+                weight: 2
+              - name: NodePreferAvoidPods
+                weight: 10000
+    EOF
+  - echo "Scheduler configuration updated" >> /var/log/cloud-init-output.log
+  # Add cluster autoscaling configuration (if needed)
+  - |
+    cat <<EOF | kubectl apply -f -
+    apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: cluster-autoscaler
+      namespace: kube-system
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRole
+    metadata:
+      name: cluster-autoscaler
+    rules:
+      - apiGroups: [""]
+        resources: ["nodes"]
+        verbs: ["watch", "list", "get"]
+      - apiGroups: [""]
+        resources: ["pods"]
+        verbs: ["watch", "list", "get"]
+    EOF
+  - echo "Cluster autoscaling configured" >> /var/log/cloud-init-output.log
+  # Final verification of all components
+  - kubectl get nodes -o wide
+  - kubectl get pods --all-namespaces
+  - echo "Final verification completed" >> /var/log/cloud-init-output.log

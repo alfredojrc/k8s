@@ -1,6 +1,7 @@
 #cloud-config
 packages:
   - haproxy
+  - keepalived
 
 write_files:
   - path: /etc/haproxy/haproxy.cfg
@@ -9,6 +10,7 @@ write_files:
         log /dev/log local0
         log /dev/log local1 notice
         daemon
+        maxconn 4096
 
       defaults
         log global
@@ -21,17 +23,95 @@ write_files:
 
       frontend kubernetes
         bind *:6443
+        bind 10.191.182.100:6443
         mode tcp
+        option tcplog
         default_backend kubernetes-backend
 
       backend kubernetes-backend
         mode tcp
         balance roundrobin
         option tcp-check
-        server control-plane-1 control-plane-1:6443 check fall 3 rise 2
-        server control-plane-2 control-plane-2:6443 check fall 3 rise 2
-        server control-plane-3 control-plane-3:6443 check fall 3 rise 2
+        option httpchk GET /healthz
+        http-check expect status 200
+        default-server inter 10s downinter 5s rise 2 fall 2 slowstart 60s maxconn 250 maxqueue 256 weight 100
+        server control-plane-1 control-plane-1:6443 check
+        server control-plane-2 control-plane-2:6443 check
+        server control-plane-3 control-plane-3:6443 check
+
+  - path: /etc/keepalived/keepalived.conf
+    content: |
+      vrrp_script check_haproxy {
+        script "killall -0 haproxy"
+        interval 2
+        weight 2
+      }
+
+      vrrp_instance VI_1 {
+        interface eth0
+        state MASTER
+        virtual_router_id 51
+        priority 101
+        authentication {
+          auth_type PASS
+          auth_pass kubernetes
+        }
+        virtual_ipaddress {
+          10.191.182.100/24
+        }
+        track_script {
+          check_haproxy
+        }
+      }
+
+  - path: /etc/default/keepalived
+    content: |
+      DAEMON_ARGS="-D"
 
 runcmd:
+  # Configure sysctl for keepalived
+  - echo "net.ipv4.ip_nonlocal_bind=1" >> /etc/sysctl.conf
+  - echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+  - sysctl -p
+
+  # Set correct configuration based on instance name
+  - |
+    if [[ $(hostname) == "haproxy-2" ]]; then
+      sed -i 's/state MASTER/state BACKUP/' /etc/keepalived/keepalived.conf
+      sed -i 's/priority 101/priority 100/' /etc/keepalived/keepalived.conf
+    fi
+
+  # Enable and start services
   - systemctl enable haproxy
   - systemctl start haproxy
+  - systemctl enable keepalived
+  - systemctl start keepalived
+
+  # Add health check script
+  - |
+    cat > /usr/local/bin/check_haproxy.sh << 'EOF'
+    #!/bin/bash
+    if ! pidof haproxy > /dev/null; then
+      exit 1
+    fi
+    if ! nc -z localhost 6443; then
+      exit 1
+    fi
+    exit 0
+    EOF
+  - chmod +x /usr/local/bin/check_haproxy.sh
+  # Configure log rotation
+  - |
+    cat > /etc/logrotate.d/haproxy << 'EOF'
+    /var/log/haproxy.log {
+        daily
+        rotate 7
+        missingok
+        notifempty
+        compress
+        delaycompress
+        postrotate
+            reload rsyslog >/dev/null 2>&1 || true
+        endscript
+    }
+    EOF
