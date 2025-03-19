@@ -193,12 +193,7 @@ resource "null_resource" "prepare_kubernetes_nodes" {
       "sudo apt-get update",
       "sudo apt-get install -y apt-transport-https ca-certificates curl gnupg",
       
-      # Add Kubernetes apt repository
-      "curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg",
-      "echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://apt.kubernetes.io/ kubernetes-xenial main' | sudo tee /etc/apt/sources.list.d/kubernetes.list",
-      
       # Install containerd
-      "sudo apt-get update",
       "sudo apt-get install -y containerd",
       
       # Configure containerd to use systemd cgroup driver
@@ -220,10 +215,39 @@ resource "null_resource" "prepare_kubernetes_nodes" {
       "cat <<EOF | sudo tee /etc/sysctl.d/k8s.conf\nnet.bridge.bridge-nf-call-iptables  = 1\nnet.bridge.bridge-nf-call-ip6tables = 1\nnet.ipv4.ip_forward                 = 1\nEOF",
       "sudo sysctl --system",
       
-      # Install Kubernetes components
-      "sudo apt-get update",
-      "sudo apt-get install -y kubelet=${var.kubernetes_version}.* kubeadm=${var.kubernetes_version}.* kubectl=${var.kubernetes_version}.*",
-      "sudo apt-mark hold kubelet kubeadm kubectl",
+      # Download and install crictl
+      "ARCH=$(dpkg --print-architecture)",
+      "curl -L https://github.com/kubernetes-sigs/cri-tools/releases/download/v1.28.0/crictl-v1.28.0-linux-$ARCH.tar.gz --output crictl.tar.gz",
+      "sudo tar zxvf crictl.tar.gz -C /usr/local/bin",
+      "rm -f crictl.tar.gz",
+      
+      # Install socat and conntrack (required for kubeadm)
+      "sudo apt-get update && sudo apt-get install -y socat conntrack",
+      
+      # Download and install kubeadm, kubelet, and kubectl directly
+      "ARCH=$(dpkg --print-architecture)",
+      "curl -LO https://dl.k8s.io/release/v${var.kubernetes_version}/bin/linux/$ARCH/kubelet",
+      "curl -LO https://dl.k8s.io/release/v${var.kubernetes_version}/bin/linux/$ARCH/kubeadm",
+      "curl -LO https://dl.k8s.io/release/v${var.kubernetes_version}/bin/linux/$ARCH/kubectl",
+      "sudo install -o root -g root -m 0755 kubectl kubeadm kubelet /usr/local/bin/",
+      "rm -f kubectl kubeadm kubelet",
+      
+      # Create kubelet systemd service
+      "sudo mkdir -p /etc/kubernetes/manifests",
+      "sudo mkdir -p /etc/systemd/system/kubelet.service.d",
+      "sudo mkdir -p /var/lib/kubelet",
+      "sudo mkdir -p /etc/cni/net.d",
+      "sudo mkdir -p /opt/cni/bin",
+      
+      # Create kubelet.service file
+      "sudo bash -c 'cat > /etc/systemd/system/kubelet.service << EOF\n[Unit]\nDescription=kubelet: The Kubernetes Node Agent\nDocumentation=https://kubernetes.io/docs/home/\n[Service]\nExecStart=/usr/local/bin/kubelet\nRestart=always\nStartLimitInterval=0\nRestartSec=10\n[Install]\nWantedBy=multi-user.target\nEOF'",
+      
+      # Create kubelet.service.d/10-kubeadm.conf
+      "sudo bash -c 'cat > /etc/systemd/system/kubelet.service.d/10-kubeadm.conf << EOF\n[Service]\nEnvironment=\"KUBELET_KUBECONFIG_ARGS=--bootstrap-kubeconfig=/etc/kubernetes/bootstrap-kubelet.conf --kubeconfig=/etc/kubernetes/kubelet.conf\"\nEnvironment=\"KUBELET_CONFIG_ARGS=--config=/var/lib/kubelet/config.yaml\"\nEnvironment=\"KUBELET_CGROUP_ARGS=--cgroup-driver=systemd\"\nEnvironment=\"KUBELET_SYSTEM_PODS_ARGS=--pod-manifest-path=/etc/kubernetes/manifests\"\nEnvironment=\"KUBELET_NETWORK_ARGS=--network-plugin=cni --cni-conf-dir=/etc/cni/net.d --cni-bin-dir=/opt/cni/bin\"\nEnvironment=\"KUBELET_DNS_ARGS=--cluster-dns=10.96.0.10 --cluster-domain=cluster.local\"\nEnvironment=\"KUBELET_AUTHZ_ARGS=--authorization-mode=Webhook --client-ca-file=/etc/kubernetes/pki/ca.crt\"\nEnvironment=\"KUBELET_EXTRA_ARGS=\"\nExecStart=\nExecStart=/usr/local/bin/kubelet $KUBELET_KUBECONFIG_ARGS $KUBELET_CONFIG_ARGS $KUBELET_CGROUP_ARGS $KUBELET_SYSTEM_PODS_ARGS $KUBELET_NETWORK_ARGS $KUBELET_DNS_ARGS $KUBELET_AUTHZ_ARGS $KUBELET_EXTRA_ARGS\nEOF'",
+      
+      # Enable and start kubelet
+      "sudo systemctl daemon-reload",
+      "sudo systemctl enable kubelet",
     ]
   }
 }

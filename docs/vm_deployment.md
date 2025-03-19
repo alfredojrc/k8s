@@ -43,6 +43,12 @@ The disk creation process has been carefully designed to ensure compatibility wi
 
 **WARNING**: Modifying this process may result in corrupted disk images or VMs that fail to boot.
 
+### 4. Kubernetes Package Repositories
+
+As of March 2024, the Kubernetes package repositories have changed. The legacy Google-hosted repositories (`apt.kubernetes.io` and `yum.kubernetes.io`) have been completely removed. The new community-owned repositories at `pkgs.k8s.io` have a different structure, with a dedicated repository for each Kubernetes minor version.
+
+**WARNING**: For detailed information about the package repository changes and recommended installation methods, see [Package Repository Documentation](package_repository.md).
+
 ## VM Deployment Process
 
 The VM deployment process consists of the following steps:
@@ -67,5 +73,6 @@ If VM deployment fails, check for these common issues:
 1. **VM doesn't boot**: Verify the VMX file has the correct settings, especially `guestOS`, `firmware`, and `nvme0` configuration.
 2. **Disk image issues**: Ensure the disk creation process follows all three steps (raw → qcow2 → vmdk).
 3. **Network connectivity issues**: Check that the ethernet adapter is set to `e1000e`.
+4. **Kubernetes package repository errors**: If you see 403 Forbidden errors when accessing the Kubernetes repositories, refer to the [Package Repository Documentation](package_repository.md) for solutions.
 
 ## [END LOCKED DOCUMENTATION] 

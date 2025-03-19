@@ -28,10 +28,10 @@ SSH_PUBLIC_KEY="$HOME/.ssh/id_ed25519.pub"
 # Get password from password file or use a default if not available
 PASSWORD_FILE="$HOME/.k8s_password"
 if [ -f "$PASSWORD_FILE" ]; then
-    PASSWORD="osNTdMa8GgKPQBy/"
+    PASSWORD=$(cat "$PASSWORD_FILE")
 else
     # Generate a random password if file doesn't exist
-    PASSWORD="osNTdMa8GgKPQBy/"
+    PASSWORD=$(openssl rand -base64 12)
     echo "$PASSWORD" > "$PASSWORD_FILE"
     chmod 600 "$PASSWORD_FILE"
 fi
