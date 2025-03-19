@@ -1,0 +1,53 @@
+========================================================
+Starting Kubernetes VM Creation
+========================================================
+Worker nodes: 2
+Auto-start VMs: false
+Non-interactive mode: true
+========================================================
+Validating environment...
+Found VMware Fusion at: /Applications/VMware Fusion.app
+Using base image: /Users/alf/godz/k8s/base_images/noble-server-cloudimg-arm64.img
+Checking VMware Fusion configuration and permissions...
+VMware Fusion permissions appear to be correctly configured.
+Checking VMware Fusion networks...
+Warning: vmnet2 network not found. You may need to create custom networks
+To create custom networks in VMware Fusion Pro:
+1. Open VMware Fusion
+2. Click on VMware Fusion in the menu bar and select Preferences
+3. Click on Network
+4. Click the + button to add a custom network vmnet2
+5. Configure vmnet2 with subnet 10.10.0.0/24
+6. Add another network vmnet3 with subnet 172.16.130.0/24
+Environment validation completed successfully
+Checking VMware Fusion networks...
+WARNING: The 'listNetworks' command is not available in your version of VMware Fusion.
+Assuming networks need to be configured manually.
+
+==============================================================
+IMPORTANT: Custom networks are not properly configured.
+==============================================================
+
+This script requires custom networks vmnet2 and vmnet3 for proper functioning.
+
+Instructions to create custom networks in VMware Fusion Pro:
+1. Open VMware Fusion
+2. Click on VMware Fusion in the menu bar and select Preferences
+3. Click on Network
+4. Click the + button to add a custom network
+5. Configure vmnet2 with subnet 10.10.0.0/24
+6. Configure vmnet3 with subnet 172.16.130.0/24
+
+Note: Standard VMware Fusion may not support custom networks.
+In that case, you would need VMware Fusion Pro.
+
+Running in non-interactive mode. Continuing despite missing networks...
+Continuing despite missing networks...
+==========================================================
+Deploying single test VM (haproxy1)
+==========================================================
+Importing VM haproxy1
+VMware dir: /Users/alf/Virtual Machines.localized/k8s_cluster/haproxy1.vmwarevm
+VMX path: /Users/alf/Virtual Machines.localized/k8s_cluster/haproxy1.vmwarevm/haproxy1.vmx
+VM haproxy1 already exists at /Users/alf/Virtual Machines.localized/k8s_cluster/haproxy1.vmwarevm/haproxy1.vmx
+Test VM deployment completed.

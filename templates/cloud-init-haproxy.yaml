@@ -1,0 +1,38 @@
+#cloud-config
+hostname: ${hostname}
+fqdn: ${hostname}.local
+
+users:
+  - name: ubuntu
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    ssh_authorized_keys:
+      - ${ssh_key}
+
+write_files:
+  - path: /etc/netplan/50-cloud-init.yaml
+    content: |
+      network:
+        version: 2
+        ethernets:
+          enp0s3:
+            dhcp4: true
+          enp0s8:
+            addresses:
+              - ${ip}/24
+            nameservers:
+              addresses: [8.8.8.8, 8.8.4.4]
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - haproxy
+  - curl
+  - vim
+  - net-tools
+
+runcmd:
+  - netplan apply
+  - systemctl enable haproxy
+  - systemctl start haproxy 
