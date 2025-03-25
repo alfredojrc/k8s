@@ -259,6 +259,10 @@ resource "null_resource" "initialize_kubernetes" {
     null_resource.prepare_kubernetes_nodes
   ]
   
+  triggers = {
+    always_run = "${timestamp()}"  # Force this to always run
+  }
+  
   # Create kubeadm configuration
   provisioner "local-exec" {
     command = <<-EOT

@@ -20,8 +20,7 @@ The cluster consists of the following components:
 ├── variables.tf               # Terraform variables
 ├── outputs.tf                 # Terraform outputs
 ├── terraform.tfvars           # Default values for Terraform variables
-├── create-ubuntu-vm.sh        # Script to create a single Ubuntu VM
-├── create-vms.sh              # Script to create all VMs for the cluster
+├── k8s-manager.sh             # All-in-one script for cluster management
 ├── terraform-setup.sh         # Script to set up Terraform configuration
 ├── templates/                 # Template files for configurations
 │   ├── haproxy.cfg.tpl        # HAProxy configuration template
@@ -32,20 +31,41 @@ The cluster consists of the following components:
 
 ## Deployment Process
 
-The deployment process is split into two parts:
+The deployment process is now simplified with a single all-in-one script (`k8s-manager.sh`) that provides an interactive menu for all operations:
 
-1. VM creation using shell scripts
-2. Service configuration using Terraform
+1. VM creation and management
+2. Snapshot handling
+3. Service configuration using Terraform
+4. Kubernetes deployment
+
+## All-in-One Management Interface
+
+The project includes a new consolidated script that combines all functionality in a single executable. Run it with:
+
+```bash
+./k8s-manager.sh
+```
+
+The menu provides the following options:
+
+1. **Deploy Kubernetes Cluster (Full Workflow)** - Runs the complete deployment process
+2. **Create all VMs and basic configuration** - Creates a new set of VMs for the Kubernetes cluster
+3. **Check VM status and network configuration** - Verifies the status and network configuration of all VMs
+4. **Create snapshots of all VMs** - Creates snapshots of all VMs (useful before making changes)
+5. **List snapshots for all VMs** - Shows all available snapshots
+6. **Rollback to a snapshot** - Allows you to revert VMs to a previous snapshot
+7. **Delete all snapshots** - Removes all snapshots to save disk space
+8. **Delete all VMs** - Completely removes all VMs in the cluster
+9. **Deploy Kubernetes on existing VMs** - Runs only the Kubernetes deployment part on existing VMs
+0. **Exit** - Exits the script
 
 ### VM Creation
 
-The `create-vms.sh` script creates all the VMs required for the Kubernetes cluster:
+The script creates the following VMs for the Kubernetes cluster:
 
 - haproxy1 & haproxy2: Load balancer VMs with 2GB RAM and 2 CPUs
 - k8s-master1, k8s-master2, k8s-master3: Control plane nodes with 4GB RAM and 4 CPUs
 - k8s-worker1 & k8s-worker2: Worker nodes with 4GB RAM and 4 CPUs
-
-The script also saves the IP addresses of the VMs to a file named `vm-ips.env` for use with Terraform.
 
 ### Service Configuration
 
@@ -75,58 +95,56 @@ Terraform is used to configure all the services on the VMs:
 - At least 50GB of free disk space
 - 16GB+ RAM recommended
 
-## Deployment Steps
+## Quick Start
 
-### 1. Prepare the Base Image
+1. Clone this repository:
+   ```bash
+   git clone <repository-url>
+   cd k8s
+   ```
 
-Ensure you have the Ubuntu cloud image in the base_images directory:
+2. Make the management script executable:
+   ```bash
+   chmod +x k8s-manager.sh
+   ```
 
-```bash
-mkdir -p base_images
-cd base_images
-wget https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-arm64.img
-cd ..
-```
+3. Run the management script:
+   ```bash
+   ./k8s-manager.sh
+   ```
 
-### 2. Create VMs
+4. Select option 1 from the menu to run the full deployment workflow.
 
-Run the `create-vms.sh` script to create all the VMs:
+5. After deployment, you can access the Kubernetes cluster using:
+   ```bash
+   # SSH to the first master node
+   ssh ubuntu@$(grep master1_ip vm-ips.env | cut -d '"' -f 2)
 
-```bash
-./create-vms.sh
-```
+   # Check cluster status
+   kubectl get nodes -o wide
+   kubectl get pods -A
+   ```
 
-This script will:
-- Create all the necessary VMs
-- Wait for them to boot and get IP addresses
-- Install basic packages on each VM
-- Save the VM IPs to vm-ips.env
+## VM Snapshot Management
 
-### 3. Set Up Terraform
+The consolidated script allows you to create and manage snapshots:
 
-Run the `terraform-setup.sh` script to prepare the Terraform configuration:
+### Creating Snapshots
 
-```bash
-./terraform-setup.sh
-```
+1. Run the management script:
+   ```bash
+   ./k8s-manager.sh
+   ```
+2. Choose option 4 to create snapshots of all VMs
+3. Enter a name for the snapshot when prompted
 
-This script will:
-- Create a terraform.tfvars file with the VM IPs and configuration
-- Initialize Terraform
+### Rolling Back to a Snapshot
 
-### 4. Deploy Kubernetes with Terraform
+If you need to restore VMs to a previous state:
 
-Apply the Terraform configuration to deploy Kubernetes:
-
-```bash
-terraform apply
-```
-
-This will:
-- Configure HAProxy and keepalived for load balancing
-- Install and configure Kubernetes on all nodes
-- Set up the Cilium CNI for networking
-- Verify the cluster is working properly
+1. Run the management script
+2. Choose option 6 to rollback to a snapshot
+3. Select the VM and then the snapshot you want to restore
 
 ## Accessing the Cluster
 
@@ -166,6 +184,12 @@ The Terraform configuration can be customized by modifying the `terraform.tfvars
 - Check that the base image exists and is accessible
 - Verify you have sufficient disk space and memory
 
+### VM Network Issues
+
+- Use option 3 in the menu to check VM network configuration
+- Verify that all VMs have valid IP addresses
+- Ensure the VMs can communicate with each other
+
 ### Kubernetes Deployment Issues
 
 - Check that all VMs are running and accessible via SSH
@@ -177,63 +201,8 @@ The Terraform configuration can be customized by modifying the `terraform.tfvars
 
 To clean up the resources:
 
-### 1. Destroy Terraform Resources
-
-```bash
-terraform destroy
-```
-
-### 2. Delete the VMs
-
-```bash
-# Stop all VMs
-vmrun -T fusion stop "~/Virtual Machines.localized/k8s_cluster/haproxy1.vmwarevm/haproxy1.vmx"
-vmrun -T fusion stop "~/Virtual Machines.localized/k8s_cluster/haproxy2.vmwarevm/haproxy2.vmx"
-vmrun -T fusion stop "~/Virtual Machines.localized/k8s_cluster/k8s-master1.vmwarevm/k8s-master1.vmx"
-vmrun -T fusion stop "~/Virtual Machines.localized/k8s_cluster/k8s-master2.vmwarevm/k8s-master2.vmx"
-vmrun -T fusion stop "~/Virtual Machines.localized/k8s_cluster/k8s-master3.vmwarevm/k8s-master3.vmx"
-vmrun -T fusion stop "~/Virtual Machines.localized/k8s_cluster/k8s-worker1.vmwarevm/k8s-worker1.vmx"
-vmrun -T fusion stop "~/Virtual Machines.localized/k8s_cluster/k8s-worker2.vmwarevm/k8s-worker2.vmx"
-
-# Remove VM directory
-rm -rf "~/Virtual Machines.localized/k8s_cluster"
-```
-
-### 3. Remove Redundant Files
-
-If you want to clean up redundant files in the project, you can use the provided cleanup script:
-
-```bash
-./cleanup-redundant-files.sh
-```
-
-This script removes unnecessary files and directories while keeping the essential ones for the deployment process.
-
-## Project Maintenance
-
-### Essential Files
-
-The following files and directories are essential for the deployment process:
-
-- **VM Creation**:
-  - `create-ubuntu-vm.sh`: Script to create a single Ubuntu VM
-  - `create-vms.sh`: Script to create all VMs for the cluster
-  - `base_images/`: Directory for Ubuntu cloud images
-
-- **Terraform Configuration**:
-  - `terraform-setup.sh`: Script to set up Terraform configuration
-  - `main.tf`: Main Terraform configuration
-  - `variables.tf`: Terraform variables
-  - `outputs.tf`: Terraform outputs
-  - `templates/`: Directory containing configuration templates
-  - `generated/`: Directory for generated configuration files
-
-### Scripts Directory
-
-The `scripts` directory contains utility scripts:
-
-- `download_base_image.sh`: Script to download the Ubuntu cloud image
-
-### Cleanup Script
-
-The `cleanup-redundant-files.sh` script helps maintain a clean project structure by removing unnecessary files and directories.
+1. Run the management script:
+   ```bash
+   ./k8s-manager.sh
+   ```
+2. Choose option 8 to delete all VMs
