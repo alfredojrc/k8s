@@ -1669,53 +1669,6 @@ deploy_k8s_workflow() {
     display_cluster_info
 }
 
-# Function to manage snapshots submenu
-manage_snapshots_submenu() {
-    while true; do
-        print_header "Snapshot Management Submenu"
-        echo -e "1) Create snapshot for all VMs"
-        echo -e "2) List snapshots for all VMs"
-        echo -e "3) Rollback all VMs to a specific snapshot"
-        echo -e "4) Delete snapshots from all VMs"
-        echo -e "5) Delete a specific snapshot from a specific VM"
-        echo -e "6) Show manual snapshot deletion instructions"
-        echo -e "0) Return to main menu"
-        echo -e "\n${CYAN}Enter your choice:${NC}"
-        
-        read -p "" SNAPSHOT_CHOICE
-        
-        case $SNAPSHOT_CHOICE in
-            1)
-                create_snapshots
-                ;;
-            2)
-                list_snapshots
-                ;;
-            3)
-                rollback_to_snapshot
-                ;;
-            4)
-                delete_all_snapshots
-                ;;
-            5)
-                delete_specific_snapshot
-                ;;
-            6)
-                show_manual_snapshot_instructions
-                ;;
-            0)
-                return
-                ;;
-            *)
-                echo -e "${RED}Invalid option. Please try again.${NC}"
-                ;;
-        esac
-        
-        echo -e "\n${CYAN}Press Enter to continue...${NC}"
-        read
-    done
-}
-
 # Main menu
 display_menu() {
     print_header "Kubernetes Cluster Management Menu"
