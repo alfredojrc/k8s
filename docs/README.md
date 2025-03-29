@@ -12,7 +12,8 @@ The `k8s-manager.sh` script provides a comprehensive solution for managing a Kub
 4. [Prerequisites](#prerequisites)
 5. [Usage](#usage)
 6. [Configuration](#configuration)
-7. [Troubleshooting](#troubleshooting)
+7. [Snapshot Management](#snapshot-management)
+8. [Troubleshooting](#troubleshooting)
 
 ## Getting Started
 
@@ -42,6 +43,7 @@ The Kubernetes Cluster Manager provides the following key features:
    - Roll back to previous states when needed
    - Delete snapshots to reclaim disk space
    - Manage snapshots for individual VMs
+   - Visual snapshot table showing status across all VMs
 
 4. **Terraform Integration**
    - Uses Terraform for infrastructure configuration
@@ -101,6 +103,102 @@ The script uses the following key configuration settings:
 
 These settings can be modified in the script if needed.
 
+## Snapshot Management
+
+The K8s Manager offers comprehensive management of VMware Fusion snapshots for your Kubernetes cluster VMs. For detailed documentation on snapshot management, see [Snapshot Management Documentation](snapshot_management.md).
+
+Key features include:
+- Create snapshots for all VMs simultaneously
+- List snapshots in an easy-to-read table format
+- Roll back VMs to previous snapshots
+- Delete snapshots individually or across all VMs
+- User-friendly console interface with color-coded status indicators
+
+### Snapshot Menu
+
+Access the snapshot management features by selecting option 4 from the main menu. This opens the Snapshot Management Submenu:
+
+```
+Snapshot Management Submenu
+1) Create snapshot for all VMs
+2) List snapshots for all VMs
+3) Rollback to a specific snapshot
+4) Delete a snapshot from all VMs
+5) Delete a specific snapshot from a specific VM
+6) Show manual snapshot deletion instructions
+0) Return to main menu
+```
+
+### Creating Snapshots
+
+Option 1 in the snapshot submenu allows you to create a snapshot for all VMs simultaneously. This ensures a consistent state across your entire Kubernetes cluster.
+
+- You will be prompted to enter a name for the snapshot
+- The script will create the snapshot in parallel across all VMs
+- Each snapshot captures the complete VM state (memory, settings, and disk)
+
+### Listing Snapshots
+
+Option 2 displays a comprehensive table showing all VMs and their snapshots:
+
+```
+=== VM Snapshot Table ===
++-----------------+-------------+
+| VM Name         | Snapshot   |
++-----------------+-------------+
+| haproxy1        | ✓          |
+| haproxy2        | ✖          |
+| k8s-master1     | ✖          |
+| k8s-master2     | ✖          |
+| k8s-master3     | ✖          |
+| k8s-worker1     | ✖          |
+| k8s-worker2     | ✖          |
++-----------------+-------------+
+```
+
+The table has the following features:
+- Color-coded VM names (green for running VMs, blue for powered-off VMs)
+- Snapshot status indicators (✓ for existing snapshots, ✖ for absent snapshots)
+- A summary showing the total number of VMs and snapshots
+- A legend explaining the color coding and symbols
+
+### Rolling Back to Snapshots
+
+Option 3 allows you to restore a VM to a previous snapshot state:
+
+1. Select the VM you want to roll back
+2. Choose from the available snapshots for that VM
+3. Confirm the rollback operation
+
+The rollback process:
+- Powers off the VM if it's running
+- Reverts to the selected snapshot state
+- Restarts the VM if it was running before
+
+### Deleting Snapshots
+
+Two options are available for deleting snapshots:
+
+- Option 4: Delete a specific snapshot across all VMs that have it
+  - Lists all unique snapshots across all VMs
+  - Deletes the selected snapshot from every VM that has it
+  - Performs the deletion in parallel for faster processing
+
+- Option 5: Delete a specific snapshot from a specific VM
+  - Select a VM first, then choose which snapshot to delete
+  - Provides the option to power off the VM first if needed
+  - Displays detailed status messages during the deletion process
+
+### VMware Fusion Integration
+
+The snapshot management utilizes VMware Fusion's `vmrun` command-line interface to:
+- Create snapshots: `vmrun snapshot <vmx_file> <snapshot_name>`
+- List snapshots: `vmrun listSnapshots <vmx_file>`
+- Revert to snapshots: `vmrun revertToSnapshot <vmx_file> <snapshot_name>`
+- Delete snapshots: `vmrun deleteSnapshot <vmx_file> <snapshot_name>`
+
+The script also provides instructions for using VMware Fusion's UI to manage snapshots (accessible via option 6).
+
 ## Troubleshooting
 
 If you encounter issues:
@@ -111,4 +209,21 @@ If you encounter issues:
 4. Check VM disk space and resources
 5. Examine the Terraform logs for deployment issues
 
-For snapshot-specific troubleshooting, refer to the [Snapshot Management](snapshot_management.md) documentation. 
+### Snapshot Troubleshooting
+
+For snapshot-related issues:
+
+- **Snapshot creation fails**: Ensure the VM has enough disk space and the VMware Fusion process has write permissions to the VM directory
+- **Cannot delete snapshots**: Some snapshots can only be deleted when the VM is powered off, try shutting down the VM first
+- **Rollback fails**: Check if the snapshot still exists and that there are no locks on the VM files
+- **Snapshot table doesn't display**: This is usually a temporary issue; try running the list command again
+- **Long snapshot names**: The table will automatically truncate very long snapshot names with '...' for better display
+
+If problems persist, you can use VMware Fusion's UI directly to manage snapshots by following the VMware Fusion Tip provided in the snapshot display.
+
+## Documentation Files
+
+- [Main README](README.md) - This file, provides an overview of all functionality
+- [Installation Guide](installation.md) - Detailed steps for installing dependencies
+- [Snapshot Management](snapshot_management.md) - Detailed documentation for VM snapshot features
+- [Network Configuration](network_config.md) - Guide for configuring networking 

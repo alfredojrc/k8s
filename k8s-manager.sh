@@ -1180,9 +1180,9 @@ create_snapshots() {
 list_snapshots() {
     print_header "Listing snapshots for all VMs"
     
+    # Check if VM directory exists
     if [ ! -d "$VM_CLUSTER_DIR" ]; then
         echo -e "${RED}Error: VM directory not found: $VM_CLUSTER_DIR${NC}"
-        echo -e "${CYAN}Please create VMs first.${NC}"
         return
     fi
     
@@ -1194,239 +1194,190 @@ list_snapshots() {
         return
     fi
     
-    # List snapshots for each VM
+    echo -e "${CYAN}Found $(echo "$VMWARE_VM_DIRS" | wc -l | tr -d ' ') VMs${NC}"
+    
+    # Get VM names (sorted)
+    VM_NAMES=()
     for VM_DIR in $VMWARE_VM_DIRS; do
         VM_NAME=$(basename "$VM_DIR" | sed 's/\.vmwarevm//')
-        VMX_FILE="$VM_DIR/$VM_NAME.vmx"
-        
-        echo -e "\n${CYAN}Snapshots for $VM_NAME:${NC}"
-        
-        if [ ! -f "$VMX_FILE" ]; then
-            echo -e "${RED}Error: VMX file not found for $VM_NAME${NC}"
-            continue
-        fi
-        
-        # List snapshots
-        SNAPSHOTS=$(vmrun -T fusion listSnapshots "$VMX_FILE" 2>&1)
-        
-        if [[ "$SNAPSHOTS" == *"Error"* ]]; then
-            echo -e "${RED}Error listing snapshots for $VM_NAME: $SNAPSHOTS${NC}"
-        elif [[ "$SNAPSHOTS" == *"No snapshots"* ]] || [ -z "$SNAPSHOTS" ]; then
-            echo -e "${CYAN}No snapshots found for $VM_NAME${NC}"
-        else
-            echo "$SNAPSHOTS" | grep -v "Total snapshots"
-        fi
-    done
-}
-
-# Rollback to a snapshot
-rollback_to_snapshot() {
-    print_header "Rollback to snapshot"
-    
-    if [ ! -d "$VM_CLUSTER_DIR" ]; then
-        echo -e "${RED}Error: VM directory not found: $VM_CLUSTER_DIR${NC}"
-        echo -e "${CYAN}Please create VMs first.${NC}"
-        return
-    fi
-    
-    # Get list of VMs
-    VMWARE_VM_DIRS=$(find "$VM_CLUSTER_DIR" -maxdepth 1 -name "*.vmwarevm" -type d)
-    
-    if [ -z "$VMWARE_VM_DIRS" ]; then
-        echo -e "${RED}Error: No VMs found in $VM_CLUSTER_DIR${NC}"
-        return
-    fi
-    
-    # Select a VM for snapshot listing
-    echo -e "${CYAN}Available VMs:${NC}"
-    VM_ARRAY=()
-    i=1
-    
-    for VM_DIR in $VMWARE_VM_DIRS; do
-        VM_NAME=$(basename "$VM_DIR" | sed 's/\.vmwarevm//')
-        VM_ARRAY+=("$VM_DIR")
-        echo -e "$i) $VM_NAME"
-        i=$((i+1))
+        VM_NAMES+=("$VM_NAME")
     done
     
-    echo -e "${CYAN}Select a VM to view snapshots (1-$((i-1))):${NC}"
-    read VM_SELECTION
+    # Sort VM names
+    IFS=$'\n' VM_NAMES=($(sort <<<"${VM_NAMES[*]}"))
+    unset IFS
     
-    if ! [[ "$VM_SELECTION" =~ ^[0-9]+$ ]] || [ "$VM_SELECTION" -lt 1 ] || [ "$VM_SELECTION" -gt $((i-1)) ]; then
-        echo -e "${RED}Invalid selection.${NC}"
-        return
-    fi
+    # Collect snapshot data
+    echo -e "${CYAN}Scanning VMs for snapshots...${NC}"
+    ALL_SNAPSHOTS=()
     
-    VM_DIR=${VM_ARRAY[$((VM_SELECTION-1))]}
-    VM_NAME=$(basename "$VM_DIR" | sed 's/\.vmwarevm//')
-    VMX_FILE="$VM_DIR/$VM_NAME.vmx"
+    # Create temporary files to store VM data
+    VM_DATA_FILE=$(mktemp)
     
-    # List snapshots for the selected VM
-    echo -e "\n${CYAN}Snapshots for $VM_NAME:${NC}"
-    SNAPSHOTS=$(vmrun -T fusion listSnapshots "$VMX_FILE" 2>&1 | grep -v "Total snapshots")
-    
-    if [[ "$SNAPSHOTS" == *"Error"* ]]; then
-        echo -e "${RED}Error listing snapshots for $VM_NAME: $SNAPSHOTS${NC}"
-        return
-    elif [[ "$SNAPSHOTS" == *"No snapshots"* ]] || [ -z "$SNAPSHOTS" ]; then
-        echo -e "${CYAN}No snapshots found for $VM_NAME${NC}"
-        return
-    fi
-    
-    # Create an array of snapshot names
-    SNAPSHOT_ARRAY=()
-    i=1
-    
-    while IFS= read -r SNAPSHOT; do
-        SNAPSHOT_ARRAY+=("$SNAPSHOT")
-        echo -e "$i) $SNAPSHOT"
-        i=$((i+1))
-    done <<< "$SNAPSHOTS"
-    
-    # Select a snapshot
-    echo -e "${CYAN}Select a snapshot to rollback to (1-$((i-1))):${NC}"
-    read SNAPSHOT_SELECTION
-    
-    if ! [[ "$SNAPSHOT_SELECTION" =~ ^[0-9]+$ ]] || [ "$SNAPSHOT_SELECTION" -lt 1 ] || [ "$SNAPSHOT_SELECTION" -gt $((i-1)) ]; then
-        echo -e "${RED}Invalid selection.${NC}"
-        return
-    fi
-    
-    SELECTED_SNAPSHOT=${SNAPSHOT_ARRAY[$((SNAPSHOT_SELECTION-1))]}
-    
-    # Confirm rollback
-    echo -e "${RED}Warning: This will revert the VM to the selected snapshot state. All changes since then will be lost.${NC}"
-    echo -e "${CYAN}Are you sure you want to rollback $VM_NAME to snapshot '$SELECTED_SNAPSHOT'? (y/n)${NC}"
-    read -p "" -n 1 -r
-    echo
-    
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        echo -e "${CYAN}Rollback cancelled.${NC}"
-        return
-    fi
-    
-    # First check VM state
-    VM_RUNNING=false
-    if vmrun -T fusion list | grep -q "$VMX_FILE"; then
-        VM_RUNNING=true
-        echo -e "${CYAN}Stopping VM...${NC}"
-        vmrun -T fusion stop "$VMX_FILE" soft || true
-        sleep 10  # Give more time for VM to shutdown
-        
-        # Check if VM is still running, try hard stop if needed
-        if vmrun -T fusion list | grep -q "$VMX_FILE"; then
-            echo -e "${RED}VM did not stop gracefully. Trying force power off...${NC}"
-            vmrun -T fusion stop "$VMX_FILE" hard || true
-            sleep 5
-            
-            # If VM is still running, cannot proceed
-            if vmrun -T fusion list | grep -q "$VMX_FILE"; then
-                echo -e "${RED}Failed to stop VM. Cannot revert to snapshot.${NC}"
-                return
+    # First pass - collect all unique snapshots
+    for VM_NAME in "${VM_NAMES[@]}"; do
+        # Find VM directory
+        VM_DIR=""
+        for DIR in $VMWARE_VM_DIRS; do
+            if [ "$(basename "$DIR" | sed 's/\.vmwarevm//')" = "$VM_NAME" ]; then
+                VM_DIR="$DIR"
+                break
             fi
-        fi
-    fi
-    
-    # Rollback to snapshot
-    echo -e "${CYAN}Rolling back to snapshot...${NC}"
-    if ! vmrun -T fusion revertToSnapshot "$VMX_FILE" "$SELECTED_SNAPSHOT"; then
-        echo -e "${RED}Failed to revert to snapshot. Check VMware Fusion logs for details.${NC}"
-        # Try to restart VM if it was running before
-        if [ "$VM_RUNNING" = true ]; then
-            echo -e "${CYAN}Attempting to restart VM in its previous state...${NC}"
-            vmrun -T fusion start "$VMX_FILE" || true
-        fi
-        return
-    fi
-    
-    # Start VM if it was running before
-    if [ "$VM_RUNNING" = true ]; then
-        echo -e "${CYAN}Starting VM...${NC}"
-        vmrun -T fusion start "$VMX_FILE" || echo -e "${RED}Failed to start VM after rollback${NC}"
-    fi
-    
-    echo -e "${GREEN}VM $VM_NAME has been rolled back to snapshot '$SELECTED_SNAPSHOT'.${NC}"
-}
-
-# Delete all snapshots
-delete_all_snapshots() {
-    print_header "Deleting all snapshots"
-    
-    if [ ! -d "$VM_CLUSTER_DIR" ]; then
-        echo -e "${RED}Error: VM directory not found: $VM_CLUSTER_DIR${NC}"
-        echo -e "${CYAN}Please create VMs first.${NC}"
-        return
-    fi
-    
-    # Get list of VMs
-    VMWARE_VM_DIRS=$(find "$VM_CLUSTER_DIR" -maxdepth 1 -name "*.vmwarevm" -type d)
-    
-    if [ -z "$VMWARE_VM_DIRS" ]; then
-        echo -e "${RED}Error: No VMs found in $VM_CLUSTER_DIR${NC}"
-        return
-    fi
-    
-    # Confirm deletion
-    echo -e "${RED}Warning: This will delete ALL snapshots for ALL VMs.${NC}"
-    echo -e "${CYAN}Are you sure you want to continue? (y/n)${NC}"
-    read -p "" -n 1 -r
-    echo
-    
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        echo -e "${CYAN}Deletion cancelled.${NC}"
-        return
-    fi
-    
-    # Delete snapshots for each VM
-    for VM_DIR in $VMWARE_VM_DIRS; do
-        VM_NAME=$(basename "$VM_DIR" | sed 's/\.vmwarevm//')
+        done
+        
         VMX_FILE="$VM_DIR/$VM_NAME.vmx"
         
-        echo -e "${CYAN}Deleting snapshots for $VM_NAME...${NC}"
-        
         if [ ! -f "$VMX_FILE" ]; then
-            echo -e "${RED}Error: VMX file not found for $VM_NAME${NC}"
             continue
         fi
         
-        # List snapshots
-        SNAPSHOTS=$(vmrun -T fusion listSnapshots "$VMX_FILE" 2>&1 | grep -v "Total snapshots")
+        # Check if VM is running (store as "running" or "stopped")
+        VM_STATUS="stopped"
+        if vmrun -T fusion list | grep -q "$VMX_FILE" 2>/dev/null; then
+            VM_STATUS="running"
+        fi
         
-        if [[ "$SNAPSHOTS" == *"Error"* ]]; then
-            echo -e "${RED}Error listing snapshots for $VM_NAME: $SNAPSHOTS${NC}"
-        elif [[ "$SNAPSHOTS" == *"No snapshots"* ]] || [ -z "$SNAPSHOTS" ]; then
-            echo -e "${CYAN}No snapshots found for $VM_NAME${NC}"
+        # Get snapshots
+        SNAPSHOTS_RAW=$(vmrun -T fusion listSnapshots "$VMX_FILE" 2>&1)
+        
+        if [[ "$SNAPSHOTS_RAW" == *"Error"* ]]; then
+            # Store VM data: name,status,snapshot_status
+            echo "$VM_NAME,$VM_STATUS,error" >> "$VM_DATA_FILE"
+        elif [[ "$SNAPSHOTS_RAW" == *"Total snapshots: 0"* ]] || [[ "$SNAPSHOTS_RAW" == *"No snapshots"* ]]; then
+            echo "$VM_NAME,$VM_STATUS,none" >> "$VM_DATA_FILE"
         else
-            # Delete each snapshot
+            # Extract snapshot names
+            SNAPSHOTS=$(echo "$SNAPSHOTS_RAW" | grep -v "Total snapshots")
+            
+            # Store VM with its snapshot list
+            echo "$VM_NAME,$VM_STATUS,has_snapshots,$SNAPSHOTS" >> "$VM_DATA_FILE"
+            
+            # Add to ALL_SNAPSHOTS array if not already there
             while IFS= read -r SNAPSHOT; do
-                echo -e "${CYAN}Deleting snapshot '$SNAPSHOT' for $VM_NAME...${NC}"
-                
-                # Check if VM is running
-                if vmrun -T fusion list | grep -q "$VMX_FILE"; then
-                    echo -e "${CYAN}VM is running. Some snapshots can only be deleted when VM is stopped.${NC}"
-                    echo -e "${CYAN}Attempt to delete anyway? (y/n)${NC}"
-                    read -p "" -n 1 -r
-                    echo
-                    
-                    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-                        echo -e "${CYAN}Skipping snapshot deletion for $VM_NAME.${NC}"
-                        continue
+                if [ -n "$SNAPSHOT" ]; then
+                    # Add to unique snapshots list
+                    FOUND=0
+                    for s in "${ALL_SNAPSHOTS[@]}"; do
+                        if [ "$s" = "$SNAPSHOT" ]; then
+                            FOUND=1
+                            break
+                        fi
+                    done
+                    if [ $FOUND -eq 0 ]; then
+                        ALL_SNAPSHOTS+=("$SNAPSHOT")
                     fi
-                fi
-                
-                # Delete snapshot - without andDeleteChildren option
-                if ! vmrun -T fusion deleteSnapshot "$VMX_FILE" "$SNAPSHOT"; then
-                    echo -e "${RED}Failed to delete snapshot '$SNAPSHOT' for $VM_NAME${NC}"
-                    echo -e "${CYAN}Note: For manual deletion, use VMware Fusion UI or use this command:${NC}"
-                    echo -e "${CYAN}vmrun -T fusion deleteSnapshot \"$VMX_FILE\" \"$SNAPSHOT\"${NC}"
-                else
-                    echo -e "${GREEN}Successfully deleted snapshot '$SNAPSHOT' for $VM_NAME${NC}"
                 fi
             done <<< "$SNAPSHOTS"
         fi
     done
     
-    echo -e "${GREEN}All snapshots have been deleted.${NC}"
+    # Sort snapshots alphabetically
+    if [ ${#ALL_SNAPSHOTS[@]} -gt 0 ]; then
+        IFS=$'\n' ALL_SNAPSHOTS=($(sort <<<"${ALL_SNAPSHOTS[*]}"))
+        unset IFS
+    fi
+    
+    echo -e "${CYAN}Found ${#ALL_SNAPSHOTS[@]} unique snapshots${NC}"
+    
+    if [ ${#ALL_SNAPSHOTS[@]} -eq 0 ]; then
+        echo -e "${CYAN}No snapshots found for any VMs.${NC}"
+        rm -f "$VM_DATA_FILE"
+        return
+    fi
+    
+    # Print table header
+    echo -e "\n${BLUE}=== VM Snapshot Table ===${NC}"
+    
+    # Calculate column widths
+    VM_COL_WIDTH=15  # VM name column width
+    SNAP_COL_WIDTH=11  # Snapshot column width
+    
+    # Build top border
+    printf "+-%${VM_COL_WIDTH}s-+" "-" | tr " " "-"
+    for ((i=0; i<${#ALL_SNAPSHOTS[@]}; i++)); do
+        printf -- "-%${SNAP_COL_WIDTH}s-+" "-" | tr " " "-"
+    done
+    printf "\n"
+    
+    # Build header row
+    printf "| ${CYAN}%-${VM_COL_WIDTH}s${NC} |" "VM Name"
+    for SNAPSHOT in "${ALL_SNAPSHOTS[@]}"; do
+        # Truncate long names
+        if [ ${#SNAPSHOT} -gt $((SNAP_COL_WIDTH-1)) ]; then
+            DISP_NAME="${SNAPSHOT:0:$((SNAP_COL_WIDTH-3))}..."
+        else
+            DISP_NAME="$SNAPSHOT"
+        fi
+        printf " ${CYAN}%-${SNAP_COL_WIDTH}s${NC}|" "$DISP_NAME"
+    done
+    printf "\n"
+    
+    # Build middle border
+    printf "+-%${VM_COL_WIDTH}s-+" "-" | tr " " "-"
+    for ((i=0; i<${#ALL_SNAPSHOTS[@]}; i++)); do
+        printf -- "-%${SNAP_COL_WIDTH}s-+" "-" | tr " " "-"
+    done
+    printf "\n"
+    
+    # Build data rows
+    while IFS="," read -r VM_NAME VM_STATUS SNAPSHOT_STATUS SNAPSHOT_DATA; do
+        # VM name with color based on running status
+        if [ "$VM_STATUS" = "running" ]; then
+            printf "| ${GREEN}%-${VM_COL_WIDTH}s${NC} |" "$VM_NAME"
+        else
+            printf "| ${BLUE}%-${VM_COL_WIDTH}s${NC} |" "$VM_NAME"
+        fi
+        
+        # Snapshot status cells
+        for SNAPSHOT in "${ALL_SNAPSHOTS[@]}"; do
+            if [ "$SNAPSHOT_STATUS" = "error" ]; then
+                printf " ${RED}!%-$((SNAP_COL_WIDTH-1))s${NC}|" ""
+            elif [ "$SNAPSHOT_STATUS" = "none" ]; then
+                printf " ${RED}✖%-$((SNAP_COL_WIDTH-1))s${NC}|" ""
+            elif [ "$SNAPSHOT_STATUS" = "has_snapshots" ]; then
+                # Check if this specific snapshot exists
+                if echo "$SNAPSHOT_DATA" | grep -q "^$SNAPSHOT$"; then
+                    printf " ${GREEN}✓%-$((SNAP_COL_WIDTH-1))s${NC}|" ""
+                else
+                    printf " ${RED}✖%-$((SNAP_COL_WIDTH-1))s${NC}|" ""
+                fi
+            else
+                # Default case - shouldn't get here
+                printf " %-${SNAP_COL_WIDTH}s|" "?"
+            fi
+        done
+        printf "\n"
+    done < "$VM_DATA_FILE"
+    
+    # Build bottom border
+    printf "+-%${VM_COL_WIDTH}s-+" "-" | tr " " "-"
+    for ((i=0; i<${#ALL_SNAPSHOTS[@]}; i++)); do
+        printf -- "-%${SNAP_COL_WIDTH}s-+" "-" | tr " " "-"
+    done
+    printf "\n"
+    
+    # Print legend
+    echo -e "\n${BLUE}=== Legend ===${NC}"
+    echo -e "${GREEN}✓${NC} = Snapshot exists"
+    echo -e "${RED}✖${NC} = No snapshot"
+    echo -e "${RED}!${NC} = Error getting snapshot data"
+    echo -e "${GREEN}VM Name${NC} = VM is running"
+    echo -e "${BLUE}VM Name${NC} = VM is powered off"
+    
+    # Print summary
+    echo -e "\n${BLUE}=== Summary ===${NC}"
+    
+    # Count running VMs
+    RUNNING_COUNT=$(grep ",running," "$VM_DATA_FILE" | wc -l | tr -d ' ')
+    
+    echo -e "VMs: ${#VM_NAMES[@]} (${GREEN}$RUNNING_COUNT running${NC}, ${BLUE}$((${#VM_NAMES[@]} - RUNNING_COUNT)) powered off${NC})"
+    echo -e "Snapshots: ${#ALL_SNAPSHOTS[@]}"
+    
+    # Clean up
+    rm -f "$VM_DATA_FILE"
+    
+    echo -e "\n${BLUE}=== VMware Fusion Tip ===${NC}"
+    echo -e "View snapshots in VMware Fusion: VM > Virtual Machine > Snapshots (Shift+Cmd+S)"
 }
 
 # Function to show manual snapshot deletion instructions
@@ -1613,6 +1564,324 @@ delete_specific_snapshot() {
     fi
 }
 
+# Rollback to a snapshot
+rollback_to_snapshot() {
+    print_header "Rollback to snapshot"
+    
+    if [ ! -d "$VM_CLUSTER_DIR" ]; then
+        echo -e "${RED}Error: VM directory not found: $VM_CLUSTER_DIR${NC}"
+        echo -e "${CYAN}Please create VMs first.${NC}"
+        return
+    fi
+    
+    # Get list of VMs
+    VMWARE_VM_DIRS=$(find "$VM_CLUSTER_DIR" -maxdepth 1 -name "*.vmwarevm" -type d)
+    
+    if [ -z "$VMWARE_VM_DIRS" ]; then
+        echo -e "${RED}Error: No VMs found in $VM_CLUSTER_DIR${NC}"
+        return
+    fi
+    
+    # Select a VM for snapshot listing
+    echo -e "${CYAN}Available VMs:${NC}"
+    VM_ARRAY=()
+    i=1
+    
+    for VM_DIR in $VMWARE_VM_DIRS; do
+        VM_NAME=$(basename "$VM_DIR" | sed 's/\.vmwarevm//')
+        VM_ARRAY+=("$VM_DIR")
+        echo -e "$i) $VM_NAME"
+        i=$((i+1))
+    done
+    
+    echo -e "${CYAN}Select a VM to view snapshots (1-$((i-1))):${NC}"
+    read VM_SELECTION
+    
+    if ! [[ "$VM_SELECTION" =~ ^[0-9]+$ ]] || [ "$VM_SELECTION" -lt 1 ] || [ "$VM_SELECTION" -gt $((i-1)) ]; then
+        echo -e "${RED}Invalid selection.${NC}"
+        return
+    fi
+    
+    VM_DIR=${VM_ARRAY[$((VM_SELECTION-1))]}
+    VM_NAME=$(basename "$VM_DIR" | sed 's/\.vmwarevm//')
+    VMX_FILE="$VM_DIR/$VM_NAME.vmx"
+    
+    # List snapshots for the selected VM
+    echo -e "\n${CYAN}Snapshots for $VM_NAME:${NC}"
+    SNAPSHOTS=$(vmrun -T fusion listSnapshots "$VMX_FILE" 2>&1 | grep -v "Total snapshots")
+    
+    if [[ "$SNAPSHOTS" == *"Error"* ]]; then
+        echo -e "${RED}Error listing snapshots for $VM_NAME: $SNAPSHOTS${NC}"
+        return
+    elif [[ "$SNAPSHOTS" == *"No snapshots"* ]] || [ -z "$SNAPSHOTS" ]; then
+        echo -e "${CYAN}No snapshots found for $VM_NAME${NC}"
+        return
+    fi
+    
+    # Create an array of snapshot names
+    SNAPSHOT_ARRAY=()
+    i=1
+    
+    while IFS= read -r SNAPSHOT; do
+        SNAPSHOT_ARRAY+=("$SNAPSHOT")
+        echo -e "$i) $SNAPSHOT"
+        i=$((i+1))
+    done <<< "$SNAPSHOTS"
+    
+    # Select a snapshot
+    echo -e "${CYAN}Select a snapshot to rollback to (1-$((i-1))):${NC}"
+    read SNAPSHOT_SELECTION
+    
+    if ! [[ "$SNAPSHOT_SELECTION" =~ ^[0-9]+$ ]] || [ "$SNAPSHOT_SELECTION" -lt 1 ] || [ "$SNAPSHOT_SELECTION" -gt $((i-1)) ]; then
+        echo -e "${RED}Invalid selection.${NC}"
+        return
+    fi
+    
+    SELECTED_SNAPSHOT=${SNAPSHOT_ARRAY[$((SNAPSHOT_SELECTION-1))]}
+    
+    # Confirm rollback
+    echo -e "${RED}Warning: This will revert the VM to the selected snapshot state. All changes since then will be lost.${NC}"
+    echo -e "${CYAN}Are you sure you want to rollback $VM_NAME to snapshot '$SELECTED_SNAPSHOT'? (y/n)${NC}"
+    read -p "" -n 1 -r
+    echo
+    
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        echo -e "${CYAN}Rollback cancelled.${NC}"
+        return
+    fi
+    
+    # First check VM state
+    VM_RUNNING=false
+    if vmrun -T fusion list | grep -q "$VMX_FILE"; then
+        VM_RUNNING=true
+        echo -e "${CYAN}Stopping VM...${NC}"
+        vmrun -T fusion stop "$VMX_FILE" soft || true
+        sleep 10  # Give more time for VM to shutdown
+        
+        # Check if VM is still running, try hard stop if needed
+        if vmrun -T fusion list | grep -q "$VMX_FILE"; then
+            echo -e "${RED}VM did not stop gracefully. Trying force power off...${NC}"
+            vmrun -T fusion stop "$VMX_FILE" hard || true
+            sleep 5
+            
+            # If VM is still running, cannot proceed
+            if vmrun -T fusion list | grep -q "$VMX_FILE"; then
+                echo -e "${RED}Failed to stop VM. Cannot revert to snapshot.${NC}"
+                return
+            fi
+        fi
+    fi
+    
+    # Rollback to snapshot
+    echo -e "${CYAN}Rolling back to snapshot...${NC}"
+    if ! vmrun -T fusion revertToSnapshot "$VMX_FILE" "$SELECTED_SNAPSHOT"; then
+        echo -e "${RED}Failed to revert to snapshot. Check VMware Fusion logs for details.${NC}"
+        # Try to restart VM if it was running before
+        if [ "$VM_RUNNING" = true ]; then
+            echo -e "${CYAN}Attempting to restart VM in its previous state...${NC}"
+            vmrun -T fusion start "$VMX_FILE" || true
+        fi
+        return
+    fi
+    
+    # Start VM if it was running before
+    if [ "$VM_RUNNING" = true ]; then
+        echo -e "${CYAN}Starting VM...${NC}"
+        vmrun -T fusion start "$VMX_FILE" || echo -e "${RED}Failed to start VM after rollback${NC}"
+    fi
+    
+    echo -e "${GREEN}VM $VM_NAME has been rolled back to snapshot '$SELECTED_SNAPSHOT'.${NC}"
+}
+
+# Delete a snapshot from all VMs
+delete_all_snapshots() {
+    print_header "Delete a snapshot from all VMs"
+    
+    if [ ! -d "$VM_CLUSTER_DIR" ]; then
+        echo -e "${RED}Error: VM directory not found: $VM_CLUSTER_DIR${NC}"
+        echo -e "${CYAN}Please create VMs first.${NC}"
+        return
+    fi
+    
+    # Get list of VMs
+    VMWARE_VM_DIRS=$(find "$VM_CLUSTER_DIR" -maxdepth 1 -name "*.vmwarevm" -type d)
+    
+    if [ -z "$VMWARE_VM_DIRS" ]; then
+        echo -e "${RED}Error: No VMs found in $VM_CLUSTER_DIR${NC}"
+        return
+    fi
+    
+    # Get unique snapshot names
+    echo -e "${CYAN}Getting available snapshots across all VMs...${NC}"
+    ALL_SNAPSHOTS=()
+    
+    for VM_DIR in $VMWARE_VM_DIRS; do
+        VM_NAME=$(basename "$VM_DIR" | sed 's/\.vmwarevm//')
+        VMX_FILE="$VM_DIR/$VM_NAME.vmx"
+        
+        if [ ! -f "$VMX_FILE" ]; then
+            echo -e "${RED}Error: VMX file not found for $VM_NAME${NC}"
+            continue
+        fi
+        
+        # Use vmrun to list snapshots
+        SNAPSHOTS=$(vmrun -T fusion listSnapshots "$VMX_FILE" 2>/dev/null | grep -v "Total snapshots" || echo "")
+        
+        # Add unique snapshots to ALL_SNAPSHOTS array
+        while IFS= read -r SNAPSHOT; do
+            if [ -n "$SNAPSHOT" ]; then
+                # Check if snapshot is already in array
+                if ! echo "${ALL_SNAPSHOTS[@]}" | grep -q "^$SNAPSHOT$"; then
+                    ALL_SNAPSHOTS+=("$SNAPSHOT")
+                fi
+            fi
+        done <<< "$SNAPSHOTS"
+    done
+    
+    # Check if there are any snapshots
+    if [ ${#ALL_SNAPSHOTS[@]} -eq 0 ]; then
+        echo -e "${CYAN}No snapshots found for any VMs.${NC}"
+        return
+    fi
+    
+    # Sort the snapshots alphabetically
+    IFS=$'\n' ALL_SNAPSHOTS=($(sort <<<"${ALL_SNAPSHOTS[*]}"))
+    unset IFS
+    
+    # Display available snapshots
+    echo -e "${CYAN}Available snapshots:${NC}"
+    for i in "${!ALL_SNAPSHOTS[@]}"; do
+        echo -e "$((i+1))) ${ALL_SNAPSHOTS[$i]}"
+    done
+    
+    # Let user select a snapshot to delete
+    echo -e "${CYAN}Select a snapshot to delete (1-${#ALL_SNAPSHOTS[@]}):${NC}"
+    read SNAPSHOT_SELECTION
+    
+    if ! [[ "$SNAPSHOT_SELECTION" =~ ^[0-9]+$ ]] || [ "$SNAPSHOT_SELECTION" -lt 1 ] || [ "$SNAPSHOT_SELECTION" -gt ${#ALL_SNAPSHOTS[@]} ]; then
+        echo -e "${RED}Invalid selection.${NC}"
+        return
+    fi
+    
+    SELECTED_SNAPSHOT=${ALL_SNAPSHOTS[$((SNAPSHOT_SELECTION-1))]}
+    
+    # Confirm deletion
+    echo -e "${RED}Warning: This will delete the snapshot '$SELECTED_SNAPSHOT' from ALL VMs that have it.${NC}"
+    echo -e "${RED}This operation cannot be undone.${NC}"
+    echo -e "${CYAN}Are you sure you want to continue? (y/n)${NC}"
+    read -p "" -n 1 -r
+    echo
+    
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        echo -e "${CYAN}Deletion cancelled.${NC}"
+        return
+    fi
+    
+    # Use temporary file to track process IDs
+    TEMP_PIDS_FILE=$(mktemp)
+    
+    # Check for each VM if it has the snapshot and delete it
+    echo -e "${CYAN}Deleting snapshot '$SELECTED_SNAPSHOT' from all VMs...${NC}"
+    
+    # Keep track of successful and failed deletions
+    SUCCESSFUL_DELETIONS=()
+    FAILED_DELETIONS=()
+    
+    for VM_DIR in $VMWARE_VM_DIRS; do
+        VM_NAME=$(basename "$VM_DIR" | sed 's/\.vmwarevm//')
+        VMX_FILE="$VM_DIR/$VM_NAME.vmx"
+        
+        if [ ! -f "$VMX_FILE" ]; then
+            echo -e "${RED}Error: VMX file not found for $VM_NAME${NC}"
+            continue
+        fi
+        
+        # Check if VM has the snapshot
+        HAS_SNAPSHOT=$(vmrun -T fusion listSnapshots "$VMX_FILE" 2>/dev/null | grep -v "Total snapshots" | grep -x "$SELECTED_SNAPSHOT" || echo "")
+        
+        if [ -n "$HAS_SNAPSHOT" ]; then
+            echo -e "${CYAN}VM $VM_NAME has the snapshot. Deleting...${NC}"
+            
+            # Delete snapshot in background process for parallel processing
+            (
+                # Check if VM is running
+                if vmrun -T fusion list | grep -q "$VMX_FILE"; then
+                    echo -e "${CYAN}VM $VM_NAME is running. Attempting to delete snapshot...${NC}"
+                else
+                    echo -e "${CYAN}VM $VM_NAME is not running. Deleting snapshot...${NC}"
+                fi
+                
+                # Delete snapshot
+                if vmrun -T fusion deleteSnapshot "$VMX_FILE" "$SELECTED_SNAPSHOT"; then
+                    echo -e "${GREEN}Successfully deleted snapshot '$SELECTED_SNAPSHOT' from $VM_NAME${NC}"
+                    # Using a file to record successful operations for parallel processes
+                    echo "$VM_NAME" >> /tmp/successful_deletions_$$
+                else
+                    echo -e "${RED}Failed to delete snapshot '$SELECTED_SNAPSHOT' from $VM_NAME${NC}"
+                    # Using a file to record failed operations for parallel processes
+                    echo "$VM_NAME" >> /tmp/failed_deletions_$$
+                fi
+            ) &
+            
+            # Save the PID of the background process
+            echo $! >> "$TEMP_PIDS_FILE"
+        else
+            echo -e "${CYAN}VM $VM_NAME does not have the snapshot. Skipping.${NC}"
+        fi
+    done
+    
+    # Create the temporary files if they don't exist
+    touch /tmp/successful_deletions_$$
+    touch /tmp/failed_deletions_$$
+    
+    # Display progress information
+    echo -e "${CYAN}Snapshot deletion is running in parallel. This might take a moment...${NC}"
+    
+    # Wait for all deletion processes to complete
+    if [ -f "$TEMP_PIDS_FILE" ]; then
+        while read -r PID; do
+            if kill -0 $PID 2>/dev/null; then
+                wait $PID
+            fi
+        done < "$TEMP_PIDS_FILE"
+        rm "$TEMP_PIDS_FILE"
+    fi
+    
+    # Collect results
+    if [ -f "/tmp/successful_deletions_$$" ]; then
+        SUCCESSFUL_DELETIONS=($(cat /tmp/successful_deletions_$$))
+        rm /tmp/successful_deletions_$$
+    fi
+    
+    if [ -f "/tmp/failed_deletions_$$" ]; then
+        FAILED_DELETIONS=($(cat /tmp/failed_deletions_$$))
+        rm /tmp/failed_deletions_$$
+    fi
+    
+    # Show summary
+    echo -e "\n${CYAN}Snapshot Deletion Summary:${NC}"
+    echo -e "Snapshot: $SELECTED_SNAPSHOT"
+    echo -e "Successfully deleted from: ${#SUCCESSFUL_DELETIONS[@]} VMs"
+    echo -e "Failed to delete from: ${#FAILED_DELETIONS[@]} VMs"
+    
+    if [ ${#SUCCESSFUL_DELETIONS[@]} -gt 0 ]; then
+        echo -e "\n${GREEN}Successfully deleted from:${NC}"
+        for VM in "${SUCCESSFUL_DELETIONS[@]}"; do
+            echo -e "- $VM"
+        done
+    fi
+    
+    if [ ${#FAILED_DELETIONS[@]} -gt 0 ]; then
+        echo -e "\n${RED}Failed to delete from:${NC}"
+        for VM in "${FAILED_DELETIONS[@]}"; do
+            echo -e "- $VM"
+        done
+        
+        echo -e "\n${CYAN}Note: Some VMs may require being powered off before deleting snapshots.${NC}"
+        echo -e "${CYAN}You can power off VMs from the main menu and try again.${NC}"
+    fi
+}
+
 # Deploy Kubernetes workflow
 deploy_k8s_workflow() {
     print_header "Deploying Kubernetes Cluster Workflow"
@@ -1675,8 +1944,8 @@ manage_snapshots_submenu() {
         print_header "Snapshot Management Submenu"
         echo -e "1) Create snapshot for all VMs"
         echo -e "2) List snapshots for all VMs"
-        echo -e "3) Rollback all VMs to a specific snapshot"
-        echo -e "4) Delete snapshots from all VMs"
+        echo -e "3) Rollback to a specific snapshot"
+        echo -e "4) Delete a snapshot from all VMs"
         echo -e "5) Delete a specific snapshot from a specific VM"
         echo -e "6) Show manual snapshot deletion instructions"
         echo -e "0) Return to main menu"
@@ -1792,4 +2061,4 @@ main() {
 }
 
 # Run main function
-main 
+main

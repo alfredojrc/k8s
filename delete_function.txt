@@ -1,0 +1,79 @@
+delete_all_snapshots() {
+    print_header "Deleting all snapshots"
+    
+    if [ ! -d "$VM_CLUSTER_DIR" ]; then
+        echo -e "${RED}Error: VM directory not found: $VM_CLUSTER_DIR${NC}"
+        echo -e "${CYAN}Please create VMs first.${NC}"
+        return
+    fi
+    
+    # Get list of VMs
+    VMWARE_VM_DIRS=$(find "$VM_CLUSTER_DIR" -maxdepth 1 -name "*.vmwarevm" -type d)
+    
+    if [ -z "$VMWARE_VM_DIRS" ]; then
+        echo -e "${RED}Error: No VMs found in $VM_CLUSTER_DIR${NC}"
+        return
+    fi
+    
+    # Confirm deletion
+    echo -e "${RED}Warning: This will delete ALL snapshots for ALL VMs.${NC}"
+    echo -e "${CYAN}Are you sure you want to continue? (y/n)${NC}"
+    read -p "" -n 1 -r
+    echo
+    
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        echo -e "${CYAN}Deletion cancelled.${NC}"
+        return
+    fi
+    
+    # Delete snapshots for each VM
+    for VM_DIR in $VMWARE_VM_DIRS; do
+        VM_NAME=$(basename "$VM_DIR" | sed 's/\.vmwarevm//')
+        VMX_FILE="$VM_DIR/$VM_NAME.vmx"
+        
+        echo -e "${CYAN}Deleting snapshots for $VM_NAME...${NC}"
+        
+        if [ ! -f "$VMX_FILE" ]; then
+            echo -e "${RED}Error: VMX file not found for $VM_NAME${NC}"
+            continue
+        fi
+        
+        # List snapshots
+        SNAPSHOTS=$(vmrun -T fusion listSnapshots "$VMX_FILE" 2>&1 | grep -v "Total snapshots")
+        
+        if [[ "$SNAPSHOTS" == *"Error"* ]]; then
+            echo -e "${RED}Error listing snapshots for $VM_NAME: $SNAPSHOTS${NC}"
+        elif [[ "$SNAPSHOTS" == *"No snapshots"* ]] || [ -z "$SNAPSHOTS" ]; then
+            echo -e "${CYAN}No snapshots found for $VM_NAME${NC}"
+        else
+            # Delete each snapshot
+            while IFS= read -r SNAPSHOT; do
+                echo -e "${CYAN}Deleting snapshot '$SNAPSHOT' for $VM_NAME...${NC}"
+                
+                # Check if VM is running
+                if vmrun -T fusion list | grep -q "$VMX_FILE"; then
+                    echo -e "${CYAN}VM is running. Some snapshots can only be deleted when VM is stopped.${NC}"
+                    echo -e "${CYAN}Attempt to delete anyway? (y/n)${NC}"
+                    read -p "" -n 1 -r
+                    echo
+                    
+                    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                        echo -e "${CYAN}Skipping snapshot deletion for $VM_NAME.${NC}"
+                        continue
+                    fi
+                fi
+                
+                # Delete snapshot - without andDeleteChildren option
+                if ! vmrun -T fusion deleteSnapshot "$VMX_FILE" "$SNAPSHOT"; then
+                    echo -e "${RED}Failed to delete snapshot '$SNAPSHOT' for $VM_NAME${NC}"
+                    echo -e "${CYAN}Note: For manual deletion, use VMware Fusion UI or use this command:${NC}"
+                    echo -e "${CYAN}vmrun -T fusion deleteSnapshot \"$VMX_FILE\" \"$SNAPSHOT\"${NC}"
+                else
+                    echo -e "${GREEN}Successfully deleted snapshot '$SNAPSHOT' for $VM_NAME${NC}"
+                fi
+            done <<< "$SNAPSHOTS"
+        fi
+    done
+    
+    echo -e "${GREEN}All snapshots have been deleted.${NC}"
+}

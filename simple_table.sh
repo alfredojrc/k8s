@@ -1,0 +1,11 @@
+#!/bin/bash
+echo -e "\n=== VM Snapshot Table ==="
+printf "+-------------+------------+\n"
+printf "| VM Name     | Snapshot   |\n"
+printf "+-------------+------------+\n"
+printf "| haproxy1    | ✓          |\n"
+printf "| haproxy2    | ✖          |\n"
+printf "+-------------+------------+\n"
+echo -e "\n=== Legend ==="
+echo "✓ = Snapshot exists"
+echo "✖ = No snapshot"
