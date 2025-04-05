@@ -29,3 +29,28 @@ terraform.rc
 ovftool
 generated
 archive
+
+# Generated files
+/generated/
+/generated/ips/
+vm-ips.env
+
+# Log files
+*.log
+!README.md # Ensure README log files are not ignored if they exist
+/logs/
+/debug_logs/
+/generated/ips/*.log
+vm_creation.log
+
+# VM files (Typically stored outside the project directory)
+# Example: /Users/alf/VMs/k8s_cluster/
+# Add patterns here if VMs are stored within the project
+
+# Password file (Typically stored outside the project directory)
+# Example: $HOME/.k8s_password
+
+
+# Archive directory (if used for temporary backups)
+/archive/
+base_images

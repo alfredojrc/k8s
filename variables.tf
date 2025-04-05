@@ -24,19 +24,8 @@ variable "haproxy_maxconn" {
   default     = 2000
 }
 
-variable "base_image" {
-  description = "Base image for VMs"
-  type        = string
-  default     = "ubuntu-24.04-base"  # Ubuntu 24.04 LTS (Noble Numbat)
-}
-
-variable "network_cidr" {
-  description = "Network CIDR for the cluster"
-  default     = "192.168.105.0/24"
-}
-
 variable "pod_network_cidr" {
-  description = "CIDR for pod network"
+  description = "CIDR for pod network, used by Cilium and Kubeadm"
   type        = string
   default     = "10.244.0.0/16"
 }
@@ -47,20 +36,10 @@ variable "service_cidr" {
   default     = "10.96.0.0/12"
 }
 
-variable "disk_size" {
-  description = "Disk size in MB"
-  type        = map(number)
-  default     = {
-    haproxy = 20480    # 20GB
-    master  = 30720    # 30GB
-    worker  = 51200    # 50GB
-  }
-}
-
 variable "ssh_public_key" {
-  description = "SSH public key for VM access"
+  description = "SSH public key for VM access (used by cloud-init, less critical for Terraform itself if keys are pre-deployed)"
   type        = string
-  default     = "~/.ssh/id_rsa.pub"  # Default SSH public key location
+  default     = "~/.ssh/id_ed25519.pub"  # Aligning default with script expectation
 }
 
 # Cilium Configuration
@@ -153,12 +132,6 @@ variable "kernel_parameters" {
   }
 }
 
-variable "base_image_path" {
-  description = "Path to base Lima image"
-  type        = string
-  default     = "~/godz/k8s/base_images/noble-server-cloudimg-arm64.img"
-}
-
 variable "secure_boot" {
   description = "Enable UEFI Secure Boot"
   type        = bool
@@ -170,56 +143,44 @@ variable "secure_boot" {
   }
 }
 
-variable "master_ips" {
-  description = "List of IP addresses for master nodes"
-  type        = list(string)
-  default     = ["192.168.105.20", "192.168.105.21", "192.168.105.22"]
-}
-
-variable "worker_ips" {
-  description = "List of IP addresses for worker nodes"
-  type        = list(string)
-  default     = ["192.168.105.30", "192.168.105.31", "192.168.105.32"]
-}
-
 variable "haproxy1_ip" {
-  description = "IP address of the first HAProxy VM"
+  description = "IP address of the first HAProxy VM (obtained from vm-ips.env)"
   type        = string
   default     = ""
 }
 
 variable "haproxy2_ip" {
-  description = "IP address of the second HAProxy VM"
+  description = "IP address of the second HAProxy VM (obtained from vm-ips.env)"
   type        = string
   default     = ""
 }
 
 variable "master1_ip" {
-  description = "IP address of the first Kubernetes master node"
+  description = "IP address of the first Kubernetes master node (obtained from vm-ips.env)"
   type        = string
   default     = ""
 }
 
 variable "master2_ip" {
-  description = "IP address of the second Kubernetes master node"
+  description = "IP address of the second Kubernetes master node (obtained from vm-ips.env)"
   type        = string
   default     = ""
 }
 
 variable "master3_ip" {
-  description = "IP address of the third Kubernetes master node"
+  description = "IP address of the third Kubernetes master node (obtained from vm-ips.env)"
   type        = string
   default     = ""
 }
 
 variable "worker1_ip" {
-  description = "IP address of the first Kubernetes worker node"
+  description = "IP address of the first Kubernetes worker node (obtained from vm-ips.env)"
   type        = string
   default     = ""
 }
 
 variable "worker2_ip" {
-  description = "IP address of the second Kubernetes worker node"
+  description = "IP address of the second Kubernetes worker node (obtained from vm-ips.env)"
   type        = string
   default     = ""
 }
@@ -239,7 +200,7 @@ variable "network_interface" {
 variable "ssh_private_key_path" {
   description = "Path to the SSH private key for connecting to VMs"
   type        = string
-  default     = "~/.ssh/id_rsa"
+  default     = "~/.ssh/id_ed25519" # Aligning default with script expectation
 }
 
 variable "ssh_username" {
