@@ -1,8 +1,8 @@
 # CKA Exam Learning Guide
 
 **Target**: Certified Kubernetes Administrator (CKA)
-**Kubernetes Version**: v1.30+
-**Last Updated**: 2025-11-25
+**Kubernetes Version**: v1.32+
+**Last Updated**: 2025-11-27
 
 ## Exam Overview
 
@@ -28,6 +28,7 @@ pie title CKA Exam Weight Distribution
 |----------|-------------|
 | [Installation Deep Dive](06-installation-deep-dive.md) | Complete 8-phase installation guide with CKA failure scenarios |
 | [CKA 2025 New Topics](07-cka-2025-new-topics.md) | **NEW** Helm, Kustomize, HPA/VPA, CRDs, CNI/CSI/CRI, etcdutl |
+| [Resource Management](08-resource-management.md) | **NEW** Namespaces, ResourceQuotas, LimitRanges, PDBs, Probes |
 
 ## Study Path
 
@@ -65,6 +66,13 @@ flowchart LR
 - [Pod lifecycle](02-workloads-scheduling.md#pod-fundamentals)
 - [Deployments vs StatefulSets](02-workloads-scheduling.md#workload-controllers)
 - [Scheduling (affinity, taints)](02-workloads-scheduling.md#scheduling)
+
+### Resource Management
+- [Namespaces](08-resource-management.md#1-namespace-fundamentals)
+- [ResourceQuotas](08-resource-management.md#2-resourcequota)
+- [LimitRanges](08-resource-management.md#3-limitrange)
+- [PodDisruptionBudgets](08-resource-management.md#4-poddisruptionbudget-pdb)
+- [Container Probes](08-resource-management.md#5-container-probes-health-checks)
 
 ### Networking
 - [Service types](03-services-networking.md#service-types)
