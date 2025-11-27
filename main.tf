@@ -92,7 +92,7 @@ resource "local_file" "keepalived_config" {
     virtual_ip    = var.virtual_ip
     interface     = "ens160" # Force bind to Bridged Interface for VIP
     router_id     = 51
-    auth_password = "k8s_vip_secret"
+    auth_password = var.keepalived_auth_password != "" ? var.keepalived_auth_password : "CHANGE_ME"
   })
   filename = "${path.module}/generated/keepalived_${local.gateway_nodes[count.index].name}.conf"
 }

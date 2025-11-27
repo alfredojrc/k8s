@@ -1,10 +1,21 @@
 variable "gateway_stats_credentials" {
   description = "Credentials for Gateway (HAProxy) stats page (format: username:password)"
   type        = string
-  default     = "admin:admin"  # Change this in production
+  default     = ""  # Set via TF_VAR_gateway_stats_credentials or .env
   validation {
-    condition     = can(regex("^[a-zA-Z0-9_-]+:[a-zA-Z0-9_-]+$", var.gateway_stats_credentials))
+    condition     = var.gateway_stats_credentials == "" || can(regex("^[a-zA-Z0-9_-]+:[a-zA-Z0-9_-]+$", var.gateway_stats_credentials))
     error_message = "Must be in username:password format without special characters"
+  }
+}
+
+variable "keepalived_auth_password" {
+  description = "Keepalived VRRP authentication password (max 8 chars)"
+  type        = string
+  sensitive   = true
+  default     = ""  # MUST set via TF_VAR_keepalived_auth_password or .env
+  validation {
+    condition     = var.keepalived_auth_password == "" || (length(var.keepalived_auth_password) >= 1 && length(var.keepalived_auth_password) <= 8)
+    error_message = "Keepalived auth password must be 1-8 characters (VRRP spec limit)"
   }
 }
 
