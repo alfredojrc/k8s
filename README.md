@@ -2,207 +2,310 @@
 
 This repository contains scripts and Terraform configurations for deploying a high-availability Kubernetes cluster on VMware Fusion using Apple Silicon Macs.
 
-## Architecture
+## Architecture: Dual-Homed DMZ
 
-The cluster consists of the following components:
+The cluster uses a secure "Dual-Homed" network design with dedicated internal networking via vmnet2.
 
-- 2 HAProxy VMs with keepalived for high availability load balancing
-- 3 Kubernetes master nodes for control plane redundancy
-- 2 Kubernetes worker nodes for running workloads
-- Cilium CNI for networking and network policy
+*   **Gateways**: Sit on the "Edge". They have one interface on your Home LAN (`192.168.68.x`) and one on the Internal Cluster Network (`10.10.0.x` via vmnet2).
+*   **Cluster Nodes**: Reside entirely on the Internal Network (`10.10.0.x`), isolated from the LAN.
+*   **Access**: User traffic hits the **VIP (192.168.68.200)** on the LAN, and is proxied by Nginx to the internal nodes.
 
-## Project Structure
+```mermaid
+graph TD
+    User((User/LAN))
 
+    subgraph "Home Network (192.168.68.0/24)"
+        VIP[("VIP: 192.168.68.200")]
+    end
+
+    subgraph "Gateway Layer (Dual-Homed)"
+        GW1[("Gateway 1<br/>LAN: .68.201<br/>Int: 10.10.0.146")]
+        GW2[("Gateway 2<br/>LAN: .68.202<br/>Int: 10.10.0.147")]
+
+        GW1 -- "ens160 (Bridged)" --- VIP
+        GW2 -- "ens160 (Bridged)" --- VIP
+    end
+
+    subgraph "Internal Cluster Network (vmnet2: 10.10.0.0/24)"
+        M1[("Master 1<br/>10.10.0.141")]
+        M2[("Master 2<br/>10.10.0.142")]
+        M3[("Master 3<br/>10.10.0.143")]
+        W1[("Worker 1<br/>10.10.0.144")]
+        W2[("Worker 2<br/>10.10.0.145")]
+    end
+
+    %% Connections
+    User --> VIP
+
+    GW1 -- "ens192 (vmnet2)" --> M1 & M2 & M3
+    GW1 -- "ens192 (vmnet2)" --> W1 & W2
+
+    GW2 -- "ens192 (vmnet2)" --> M1 & M2 & M3
+    GW2 -- "ens192 (vmnet2)" --> W1 & W2
+
+    classDef master fill:#e1f5fe,stroke:#01579b
+    classDef worker fill:#f3e5f5,stroke:#4a148c
+    classDef gateway fill:#e8f5e9,stroke:#1b5e20
+    class M1,M2,M3 master
+    class W1,W2 worker
+    class GW1,GW2,VIP gateway
 ```
-.
-├── README.md                  # Main documentation
-├── main.tf                    # Main Terraform configuration
-├── variables.tf               # Terraform variables
-├── outputs.tf                 # Terraform outputs
-├── terraform.tfvars           # Default values for Terraform variables
-├── k8s-manager.sh             # All-in-one script for cluster management
-├── terraform-setup.sh         # Script to set up Terraform configuration
-├── templates/                 # Template files for configurations
-│   ├── haproxy.cfg.tpl        # HAProxy configuration template
-│   └── keepalived.conf.tpl    # Keepalived configuration template
-├── generated/                 # Generated configuration files
-└── base_images/               # Directory for Ubuntu cloud images
-```
+
+## Network Configuration
+
+### VMware Fusion Networks
+
+| Network | Subnet | Type | Purpose |
+|---------|--------|------|---------|
+| Bridged | 192.168.68.0/24 | Physical LAN | Gateway external interface, VIP |
+| **vmnet2** | **10.10.0.0/24** | **NAT + Host-only** | **Internal cluster communication** |
+
+### IP Address Allocation (Updated 2025-11-25)
+
+| Host | LAN IP | Internal IP | Role | Snapshot |
+|------|--------|-------------|------|----------|
+| VIP | 192.168.68.200 | - | External access point | - |
+| gateway1 | 192.168.68.201 | 10.10.0.146 | Load balancer (MASTER) | `patched-20251125` |
+| gateway2 | 192.168.68.202 | 10.10.0.147 | Load balancer (BACKUP) | `patched-20251125` |
+| k8s-master1 | - | 10.10.0.141 | Control plane | `patched-20251125` |
+| k8s-master2 | - | 10.10.0.142 | Control plane | `patched-20251125` |
+| k8s-master3 | - | 10.10.0.143 | Control plane | `patched-20251125` |
+| k8s-worker1 | - | 10.10.0.144 | Workloads | `patched-20251125` |
+| k8s-worker2 | - | 10.10.0.145 | Workloads | `patched-20251125` |
+| apt-cache-server | - | 10.10.0.148 | APT cache (port 3142) | - |
+
+## API Endpoints
+
+| Service | Endpoint | Access From | Description |
+|---------|----------|-------------|-------------|
+| **Cluster VIP** | `192.168.68.200` | **LAN** | Entry point for all services |
+| **K8s API** | `https://192.168.68.200:6443` | **LAN** | Kubernetes Control Plane |
+| **HTTPS Ingress** | `https://192.168.68.200:443` | **LAN** | App Traffic (Passthrough) |
+| **HTTP Ingress** | `http://192.168.68.200:80` | **LAN** | App Traffic (Forwarded) |
 
 ## Deployment Process
 
-The deployment process is now simplified with a single all-in-one script (`k8s-manager.sh`) that provides an interactive menu for all operations:
+### Prerequisites
+*   VMware Fusion Pro 13+
+*   vmnet2 configured in VMware Fusion (10.10.0.0/24 with NAT)
+*   A LAN network subnet `192.168.68.0/24` (or modify Terraform vars)
+*   Free IP `192.168.68.200` for the VIP
 
-1. VM creation and management
-2. Snapshot handling
-3. Service configuration using Terraform
-4. Kubernetes deployment
-
-## All-in-One Management Interface
-
-The project includes a new consolidated script that combines all functionality in a single executable. Run it with:
-
+### Quick Start
 ```bash
-./k8s-manager.sh
+# 1. Deploy everything (Destructive!)
+./k8s-manager.sh -o 1 -y
 ```
 
-The menu provides the following options:
+### Migration from vmnet8 to vmnet2
+If you have existing VMs on vmnet8, migrate them:
+```bash
+# Interactive migration
+./migrate-to-vmnet2.sh
 
-1. **Deploy Kubernetes Cluster (Full Workflow)** - Runs the complete deployment process
-2. **Create all VMs and basic configuration** - Creates a new set of VMs for the Kubernetes cluster
-3. **Check VM status and network configuration** - Verifies the status and network configuration of all VMs
-4. **Create snapshots of all VMs** - Creates snapshots of all VMs (useful before making changes)
-5. **List snapshots for all VMs** - Shows all available snapshots
-6. **Rollback to a snapshot** - Allows you to revert VMs to a previous snapshot
-7. **Delete all snapshots** - Removes all snapshots to save disk space
-8. **Delete all VMs** - Completely removes all VMs in the cluster
-9. **Deploy Kubernetes on existing VMs** - Runs only the Kubernetes deployment part on existing VMs
-0. **Exit** - Exits the script
-
-### VM Creation
-
-The script creates the following VMs for the Kubernetes cluster:
-
-- haproxy1 & haproxy2: Load balancer VMs with 2GB RAM and 2 CPUs
-- k8s-master1, k8s-master2, k8s-master3: Control plane nodes with 4GB RAM and 4 CPUs
-- k8s-worker1 & k8s-worker2: Worker nodes with 4GB RAM and 4 CPUs
-
-### Service Configuration
-
-Terraform is used to configure all the services on the VMs:
-
-- HAProxy and keepalived on the HAProxy VMs
-  - Configures a virtual IP (10.10.0.100) for high availability
-  - Sets up load balancing for the Kubernetes API server
-  - Configures HTTP/HTTPS traffic routing to worker nodes
-
-- Kubernetes on the master and worker nodes
-  - Installs containerd as the container runtime
-  - Configures the Kubernetes control plane on master nodes
-  - Joins worker nodes to the cluster
-
-- Cilium CNI for networking
-  - Provides networking between pods
-  - Implements Kubernetes Network Policies
-  - Offers enhanced observability with Hubble
-
-## Prerequisites
-
-- VMware Fusion Pro 13 or later on Apple Silicon Mac
-- Ubuntu 24.04 LTS (Noble Numbat) ARM64 cloud image in the `base_images` directory
-- Terraform 1.5.0 or later
-- SSH key pair for authentication (default: ~/.ssh/id_ed25519)
-- At least 50GB of free disk space
-- 16GB+ RAM recommended
-
-## Quick Start
-
-1. Clone this repository:
-   ```bash
-   git clone <repository-url>
-   cd k8s
-   ```
-
-2. Make the management script executable:
-   ```bash
-   chmod +x k8s-manager.sh
-   ```
-
-3. Run the management script:
-   ```bash
-   ./k8s-manager.sh
-   ```
-
-4. Select option 1 from the menu to run the full deployment workflow.
-
-5. After deployment, you can access the Kubernetes cluster using:
-   ```bash
-   # SSH to the first master node
-   ssh ubuntu@$(grep master1_ip vm-ips.env | cut -d '"' -f 2)
-
-   # Check cluster status
-   kubectl get nodes -o wide
-   kubectl get pods -A
-   ```
-
-## VM Snapshot Management
-
-The consolidated script allows you to create and manage snapshots:
-
-### Creating Snapshots
-
-1. Run the management script:
-   ```bash
-   ./k8s-manager.sh
-   ```
-2. Choose option 4 to create snapshots of all VMs
-3. Enter a name for the snapshot when prompted
-
-### Rolling Back to a Snapshot
-
-If you need to restore VMs to a previous state:
-
-1. Run the management script
-2. Choose option 6 to rollback to a snapshot
-3. Select the VM and then the snapshot you want to restore
+# Or non-interactive
+./migrate-to-vmnet2.sh --migrate-all
+```
 
 ## Accessing the Cluster
 
-After deployment, you can access the Kubernetes cluster using:
-
+From your laptop (on the same LAN):
 ```bash
-# SSH to the first master node
-ssh ubuntu@$(grep master1_ip vm-ips.env | cut -d '"' -f 2)
+# Configure kubectl to talk to the VIP
+kubectl config set-cluster my-cluster --server=https://192.168.68.200:6443 --insecure-skip-tls-verify
 
-# Check cluster status
-kubectl get nodes -o wide
-kubectl get pods -A
+# Or copy kubeconfig from a master node
+scp ubuntu@10.10.0.131:~/.kube/config ~/.kube/config
 ```
 
-The HAProxy statistics page is available at:
-```
-http://10.10.0.100:9000
-```
-(using the credentials admin:admin)
+## Documentation
 
-## Configuration
+| Document | Description |
+|----------|-------------|
+| [Infrastructure](docs/infrastructure.md) | Network architecture, VMware config |
+| [Networking](docs/networking.md) | Traffic flow, CNI, port mappings |
+| [VM Management](docs/vm_management.md) | Provisioning, cloud-init, snapshots |
+| [K8s Deployment](docs/k8s_deployment.md) | Cluster bootstrap, join process |
+| [Snapshot Management](docs/snapshot_management.md) | Backup and restore |
 
-The Terraform configuration can be customized by modifying the `terraform.tfvars` file:
+## Key Scripts
 
-- VM IP addresses
-- Network configuration (virtual IP, network interface)
-- SSH configuration (key path, username)
-- Kubernetes version
-- Cilium version and configuration
-- HAProxy settings
+| Script | Purpose |
+|--------|---------|
+| `k8s-manager.sh` | Main management script (create, delete, snapshot VMs) |
+| `migrate-to-vmnet2.sh` | Migrate VMs from vmnet8 to vmnet2 |
+| `terraform-setup.sh` | Initialize Terraform configuration |
+
+## Software Stack
+
+| Component | Version |
+|-----------|---------|
+| Ubuntu | 24.04 LTS |
+| Kubernetes | v1.29.0 |
+| Cilium CNI | v1.16.x |
+| Nginx | Latest |
+| Keepalived | Latest |
 
 ## Troubleshooting
 
-### VM Creation Issues
+### Check VM Network Configuration
+```bash
+# Verify VMX settings
+grep -E "ethernet|vnet" ~/VMs/k8s_cluster/k8s-master1.vmwarevm/k8s-master1.vmx
 
-- Ensure VMware Fusion is properly installed and licensed
-- Check that the base image exists and is accessible
-- Verify you have sufficient disk space and memory
+# Check VM IP addresses
+./k8s-manager.sh -o 3
+```
 
-### VM Network Issues
+### Verify Internal Connectivity
+```bash
+# SSH to a gateway and ping internal nodes
+ssh ubuntu@192.168.68.201
+ping 10.10.0.141  # Master 1
+```
 
-- Use option 3 in the menu to check VM network configuration
-- Verify that all VMs have valid IP addresses
-- Ensure the VMs can communicate with each other
+### Check vmnet2 Status
+```bash
+# On Mac host
+cat "/Library/Preferences/VMware Fusion/networking" | grep VNET_2
+```
 
-### Kubernetes Deployment Issues
+## Qdrant Knowledge Base Integration
 
-- Check that all VMs are running and accessible via SSH
-- Verify the HAProxy configuration is correct
-- Ensure the virtual IP is properly configured
-- Check the Kubernetes logs on the master nodes
+This project includes a Qdrant vector database for semantic search of K8s documentation, enabling intelligent knowledge retrieval via Claude Code MCP integration.
 
-## Cleanup
+### Architecture
 
-To clean up the resources:
+```
+Qdrant Vector DB (Docker)
+├── Container: qdrant-k8s (ports 6335:6333, 6336:6334)
+├── Storage: ./qdrant_storage (persistent)
+├── Collection: k8s-docs (auto-created by MCP)
+└── MCP Integration: mcp-server-qdrant (FastEmbed)
+```
 
-1. Run the management script:
-   ```bash
-   ./k8s-manager.sh
-   ```
-2. Choose option 8 to delete all VMs
+### Quick Start
+
+```bash
+# 1. Start Qdrant container
+docker-compose -f docker-compose-qdrant.yml up -d
+
+# 2. Verify container running
+docker ps | grep qdrant-k8s
+
+# 3. Test API access
+curl http://localhost:6335/collections
+```
+
+### MCP Server Configuration
+
+The MCP server is configured in `~/.claude.json` for the k8s project:
+
+```json
+{
+  "mcpServers": {
+    "qdrant-k8s": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["mcp-server-qdrant"],
+      "env": {
+        "QDRANT_URL": "http://localhost:6335",
+        "COLLECTION_NAME": "k8s-docs",
+        "QDRANT_API_KEY": "your-api-key-here",
+        "EMBEDDING_MODEL": "sentence-transformers/all-MiniLM-L6-v2"
+      }
+    }
+  }
+}
+```
+
+### MCP Tools Available
+
+| Tool | Purpose |
+|------|---------|
+| `qdrant-store` | Store content with semantic embeddings |
+| `qdrant-find` | Search knowledge base via natural language |
+
+### Important: Collection Creation
+
+**DO NOT manually create Qdrant collections!**
+
+The mcp-server-qdrant uses FastEmbed which requires **named vectors** (e.g., `fast-all-minilm-l6-v2`). If you manually create collections, they will have unnamed vectors and cause errors.
+
+**Correct approach**: Let the MCP server auto-create collections on first `qdrant-store` operation.
+
+### Troubleshooting Qdrant
+
+#### Error: "Not existing vector name error: fast-all-minilm-l6-v2"
+
+**Cause**: Collection was manually created with unnamed vectors.
+
+**Solution**:
+```bash
+# Delete the incorrectly created collection
+curl -X DELETE http://localhost:6335/collections/k8s-docs \
+  -H "api-key: your-api-key"
+
+# The MCP server will auto-recreate with correct schema on next store operation
+```
+
+**Correct collection schema** (auto-created by MCP):
+```json
+{
+  "vectors": {
+    "fast-all-minilm-l6-v2": {
+      "size": 384,
+      "distance": "Cosine"
+    }
+  }
+}
+```
+
+**Incorrect schema** (manually created):
+```json
+{
+  "vectors": {
+    "size": 384,
+    "distance": "Cosine"
+  }
+}
+```
+
+#### Check Collection Status
+```bash
+# List all collections
+curl http://localhost:6335/collections
+
+# Get collection details
+curl http://localhost:6335/collections/k8s-docs
+```
+
+#### Container Issues
+```bash
+# Check container logs
+docker logs qdrant-k8s
+
+# Restart container
+docker-compose -f docker-compose-qdrant.yml restart
+
+# Full reset (removes all data!)
+docker-compose -f docker-compose-qdrant.yml down -v
+docker-compose -f docker-compose-qdrant.yml up -d
+```
+
+### CKA Learning Content
+
+The knowledge base contains CKA exam preparation material:
+
+| Topic | Weight | Content |
+|-------|--------|---------|
+| Troubleshooting | 30% | Pod debugging, node issues, networking |
+| Cluster Architecture | 25% | Control plane, kubeadm, etcd, RBAC |
+| Services & Networking | 20% | Services, DNS, NetworkPolicy, Gateway API |
+| Workloads & Scheduling | 15% | Pods, Deployments, scheduling |
+| Storage | 10% | PV, PVC, StorageClasses |
+
+**Query examples**:
+- "How do I troubleshoot a pod stuck in Pending?"
+- "Explain etcd backup and restore"
+- "What are Kubernetes NetworkPolicies?"

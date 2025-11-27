@@ -1,0 +1,43 @@
+#cloud-config
+hostname: ${hostname}
+fqdn: ${hostname}.local
+
+users:
+  - name: ubuntu
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    ssh_authorized_keys:
+      - ${ssh_key}
+
+write_files:
+  - path: /etc/netplan/50-cloud-init.yaml
+    content: |
+      network:
+        version: 2
+        ethernets:
+          ens160:
+            dhcp4: true
+            # This is the Bridged (LAN) interface - 192.168.68.x
+            # VIP (192.168.68.200) is hosted on this interface
+          ens192:
+            dhcp4: true
+            # This is the vmnet2 (Internal Cluster) interface - 10.10.0.x
+            # Used for communication with K8s masters and workers
+            dhcp4-overrides:
+              use-routes: false # Prefer default gateway from LAN (ens160)
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - nginx
+  - curl
+  - vim
+  - net-tools
+  - keepalived
+
+runcmd:
+  - netplan apply
+  - systemctl enable nginx
+  - systemctl start nginx
+  - systemctl enable keepalived

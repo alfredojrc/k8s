@@ -1,15 +1,15 @@
-variable "haproxy_stats_credentials" {
-  description = "Credentials for HAProxy stats page (format: username:password)"
+variable "gateway_stats_credentials" {
+  description = "Credentials for Gateway (HAProxy) stats page (format: username:password)"
   type        = string
   default     = "admin:admin"  # Change this in production
   validation {
-    condition     = can(regex("^[a-zA-Z0-9_-]+:[a-zA-Z0-9_-]+$", var.haproxy_stats_credentials))
+    condition     = can(regex("^[a-zA-Z0-9_-]+:[a-zA-Z0-9_-]+$", var.gateway_stats_credentials))
     error_message = "Must be in username:password format without special characters"
   }
 }
 
-variable "haproxy_timeouts" {
-  description = "HAProxy timeout settings in milliseconds"
+variable "gateway_timeouts" {
+  description = "Gateway (HAProxy) timeout settings in milliseconds"
   type        = map(number)
   default     = {
     connect = 5000
@@ -18,8 +18,8 @@ variable "haproxy_timeouts" {
   }
 }
 
-variable "haproxy_maxconn" {
-  description = "HAProxy maximum connections"
+variable "gateway_maxconn" {
+  description = "Gateway (HAProxy) maximum connections"
   type        = number
   default     = 2000
 }
@@ -143,14 +143,14 @@ variable "secure_boot" {
   }
 }
 
-variable "haproxy1_ip" {
-  description = "IP address of the first HAProxy VM (obtained from vm-ips.env)"
+variable "gateway1_ip" {
+  description = "IP address of the first Gateway (HAProxy) VM (obtained from vm-ips.env)"
   type        = string
   default     = ""
 }
 
-variable "haproxy2_ip" {
-  description = "IP address of the second HAProxy VM (obtained from vm-ips.env)"
+variable "gateway2_ip" {
+  description = "IP address of the second Gateway (HAProxy) VM (obtained from vm-ips.env)"
   type        = string
   default     = ""
 }
@@ -186,15 +186,17 @@ variable "worker2_ip" {
 }
 
 variable "virtual_ip" {
-  description = "Virtual IP address for the HAProxy load balancer"
+  description = "Virtual IP address for the Gateway load balancer (LAN-facing VIP)"
   type        = string
-  default     = "10.10.0.100"
+  default     = "192.168.68.200"  # External VIP on LAN for user access
+  # Note: Internal K8s API endpoint uses 10.10.0.100 on vmnet2
 }
 
 variable "network_interface" {
-  description = "Network interface for keepalived"
+  description = "Network interface for keepalived (Bridged LAN interface on Gateways)"
   type        = string
-  default     = "ens160"
+  default     = "ens160"  # Bridged interface for VIP on LAN (192.168.68.x)
+  # Note: ens192 is the vmnet2 internal interface (10.10.0.x)
 }
 
 variable "ssh_private_key_path" {
@@ -210,7 +212,25 @@ variable "ssh_username" {
 }
 
 variable "kubernetes_version" {
+
   description = "Kubernetes version to install"
+
   type        = string
+
   default     = "1.29.0"
-} 
+
+}
+
+
+
+variable "apt_proxy_url" {
+
+  description = "URL of the APT proxy server (e.g., http://192.168.130.153:3142). Leave empty to disable."
+
+  type        = string
+
+  default     = ""
+
+}
+
+ 

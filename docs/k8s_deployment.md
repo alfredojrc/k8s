@@ -7,13 +7,14 @@ The k8s-manager.sh script provides powerful automation for deploying a highly av
 ## Table of Contents
 
 1. [Deployment Architecture](#deployment-architecture)
-2. [Deployment Methods](#deployment-methods)
-3. [Configuration Options](#configuration-options)
-4. [Deployment Process](#deployment-process)
-5. [Post-Deployment Management](#post-deployment-management)
-6. [Terraform Integration](#terraform-integration)
-7. [Best Practices](#best-practices)
-8. [Troubleshooting](#troubleshooting)
+2. [API Endpoints](#api-endpoints)
+3. [Deployment Methods](#deployment-methods)
+4. [Configuration Options](#configuration-options)
+5. [Deployment Process](#deployment-process)
+6. [Post-Deployment Management](#post-deployment-management)
+7. [Terraform Integration](#terraform-integration)
+8. [Best Practices](#best-practices)
+9. [Troubleshooting](#troubleshooting)
 
 ## Deployment Architecture
 
@@ -21,7 +22,7 @@ The Kubernetes cluster deployed by this script follows a high-availability archi
 
 ```
                    ┌───────────┐     ┌───────────┐
-                   │  haproxy1 │     │  haproxy2 │
+                   │  gateway1 │     │  gateway2 │
                    └─────┬─────┘     └─────┬─────┘
                          │                 │
                          └────────┬────────┘
@@ -43,16 +44,26 @@ The Kubernetes cluster deployed by this script follows a high-availability archi
 ```
 
 Components:
-- **Load Balancers**: Two HAProxy instances for high availability
+- **Load Balancers**: Two Gateway (HAProxy) instances for high availability
 - **Control Plane**: Three Kubernetes master nodes
 - **Worker Nodes**: Two Kubernetes worker nodes
 - **Virtual IP**: A floating IP address for accessing the Kubernetes API
 
+## API Endpoints
+
+Once deployed, the following endpoints are available:
+
+| Service | Endpoint | Description | Credentials |
+|---------|----------|-------------|-------------|
+| **Gateway Load Balancer** | `http://10.10.0.100:80` | Entry point for deployed applications | N/A |
+| **Kubernetes API** | `https://10.10.0.100:6443` | Main Kubernetes API server | Certificate-based |
+| **HAProxy Stats** | `http://10.10.0.100:9000` | Load balancer statistics and health | `admin:admin` |
+
 ## Deployment Methods
 
-The script offers two primary methods for deploying Kubernetes:
+The script offers three primary methods for deploying Kubernetes:
 
-### 1. Full Workflow Deployment
+### 1. Full Workflow Deployment (Interactive)
 
 This option creates VMs and deploys Kubernetes in a single workflow:
 
@@ -66,16 +77,28 @@ This option creates VMs and deploys Kubernetes in a single workflow:
    - Deploy Kubernetes
    - Display cluster information
 
-### 2. Deployment on Existing VMs
+### 2. Deployment on Existing VMs (Interactive)
 
 This option allows you to deploy Kubernetes on VMs you've already created:
 
-1. From the main menu, select option 6: "Deploy Kubernetes on existing VMs"
+1. From the main menu, select option 9: "Deploy Kubernetes on existing VMs"
 2. The script will:
    - Check for the vm-ips.env file
    - Set up Terraform
    - Deploy Kubernetes
    - Display cluster information
+
+### 3. Non-Interactive / Automated Deployment
+
+For CI/CD pipelines or automated setups, you can use command-line flags:
+
+- `-o`: Specify option(s) to run (comma-separated)
+- `-y`: Automatically confirm prompts
+
+**Example:**
+```bash
+./k8s-manager.sh -o 1 -y
+```
 
 ## Configuration Options
 
@@ -93,7 +116,7 @@ The Kubernetes deployment process involves these major steps:
 ### 1. Infrastructure Preparation
 
 - Creating the necessary VMs
-- Setting up HAProxy load balancers
+- Setting up Gateway (HAProxy) load balancers
 - Configuring networking between components
 
 ### 2. Terraform Setup
@@ -105,7 +128,7 @@ The script runs `terraform-setup.sh` which:
 ### 3. Kubernetes Deployment
 
 The script uses Terraform to:
-- Configure HAProxy for Kubernetes API load balancing
+- Configure Gateway VMs for Kubernetes API load balancing
 - Install Kubernetes components on master nodes
 - Initialize the Kubernetes cluster on the first master
 - Join additional masters to the cluster
@@ -123,7 +146,7 @@ The script uses Terraform to:
 After deployment, you can:
 
 1. **Access the cluster**: SSH to the first master node and use kubectl
-2. **Monitor the deployment**: Check the HAProxy stats page
+2. **Monitor the deployment**: Check the Gateway (HAProxy) stats page
 3. **Deploy applications**: Use kubectl to deploy workloads
 
 ## Terraform Integration
@@ -135,7 +158,7 @@ The script integrates with Terraform for infrastructure management:
 - **Variables**: Configured automatically from VM IPs
 
 Key Terraform resources deployed:
-- HAProxy configuration
+- Gateway (HAProxy) configuration
 - Keepalived for virtual IP
 - Kubernetes cluster components
 - Network configuration
@@ -172,7 +195,7 @@ Key Terraform resources deployed:
    - Check for errors in Terraform logs
 
 2. **Kubernetes API Not Accessible**
-   - Verify HAProxy configuration
+   - Verify Gateway (HAProxy) configuration
    - Check master node status
    - Verify network connectivity
 

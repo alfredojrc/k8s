@@ -1,15 +1,24 @@
 output "vm_ips" {
-  description = "IP addresses of the VMs"
+  description = "IP addresses of the VMs (vmnet2 - 10.10.0.0/24)"
   value = {
-    haproxy = "10.10.0.10"
-    master  = "10.10.0.20"
-    worker1 = "10.10.0.21"
-    worker2 = "10.10.0.22"
+    # Gateway VMs have dual interfaces:
+    #   - LAN (Bridged): 192.168.68.x for VIP
+    #   - Internal (vmnet2): 10.10.0.x for cluster communication
+    gateway1_lan      = "192.168.68.201"
+    gateway1_internal = "10.10.0.146"
+    gateway2_lan      = "192.168.68.202"
+    gateway2_internal = "10.10.0.147"
+    # K8s nodes on vmnet2 only (DHCP-assigned from vmnet2)
+    master1  = "10.10.0.141"
+    master2  = "10.10.0.142"
+    master3  = "10.10.0.143"
+    worker1  = "10.10.0.144"
+    worker2  = "10.10.0.145"
   }
 }
 
-output "haproxy_ports" {
-  description = "Ports exposed by HAProxy"
+output "gateway_ports" {
+  description = "Ports exposed by Gateway (HAProxy)"
   value = {
     http  = "80"
     https = "443"
@@ -33,8 +42,8 @@ output "next_steps" {
 
     3. Join worker nodes using the token from step 1
 
-    4. Configure HAProxy:
-       limactl shell haproxy sudo vim /etc/haproxy/haproxy.cfg
+    4. Configure Gateway (HAProxy):
+       limactl shell gateway sudo vim /etc/haproxy/haproxy.cfg
 
     Note: For most development environments, Flannel is sufficient. Choose Calico if you need:
     - Network Policies
@@ -50,10 +59,10 @@ output "kubernetes_api_endpoint" {
   value       = "${var.virtual_ip}:6443"
 }
 
-output "haproxy_nodes" {
-  description = "HAProxy nodes information"
+output "gateway_nodes" {
+  description = "Gateway (HAProxy) nodes information"
   value = [
-    for node in local.haproxy_nodes : {
+    for node in local.gateway_nodes : {
       name = node.name
       ip   = node.ip
     }
@@ -86,6 +95,6 @@ output "kubeconfig_path" {
 }
 
 output "virtual_ip" {
-  description = "Virtual IP address for the HAProxy load balancer"
+  description = "Virtual IP address for the Gateway load balancer"
   value       = var.virtual_ip
 } 

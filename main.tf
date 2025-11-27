@@ -17,8 +17,8 @@ provider "local" {}
 # Load VM IPs from environment file
 locals {
   vm_ips = {
-    haproxy1 = var.haproxy1_ip != "" ? var.haproxy1_ip : try(trimspace(file("${path.module}/vm-ips.env")), "")
-    haproxy2 = var.haproxy2_ip != "" ? var.haproxy2_ip : try(trimspace(file("${path.module}/vm-ips.env")), "")
+    gateway1 = var.gateway1_ip != "" ? var.gateway1_ip : try(trimspace(file("${path.module}/vm-ips.env")), "")
+    gateway2 = var.gateway2_ip != "" ? var.gateway2_ip : try(trimspace(file("${path.module}/vm-ips.env")), "")
     master1  = var.master1_ip != "" ? var.master1_ip : try(trimspace(file("${path.module}/vm-ips.env")), "")
     master2  = var.master2_ip != "" ? var.master2_ip : try(trimspace(file("${path.module}/vm-ips.env")), "")
     master3  = var.master3_ip != "" ? var.master3_ip : try(trimspace(file("${path.module}/vm-ips.env")), "")
@@ -26,7 +26,7 @@ locals {
     worker2  = var.worker2_ip != "" ? var.worker2_ip : try(trimspace(file("${path.module}/vm-ips.env")), "")
   }
 
-  # HAProxy configuration variables
+  # Nginx configuration variables
   worker_nodes = [
     {
       name = "k8s-worker1"
@@ -53,15 +53,15 @@ locals {
     }
   ]
   
-  haproxy_nodes = [
+  gateway_nodes = [
     {
-      name     = "haproxy1"
-      ip       = local.vm_ips.haproxy1
+      name     = "gateway1"
+      ip       = local.vm_ips.gateway1
       priority = 101
     },
     {
-      name     = "haproxy2"
-      ip       = local.vm_ips.haproxy2
+      name     = "gateway2"
+      ip       = local.vm_ips.gateway2
       priority = 100
     }
   ]
@@ -74,63 +74,63 @@ locals {
   }
 }
 
-# Generate HAProxy configuration
-resource "local_file" "haproxy_config" {
-  content = templatefile("${path.module}/templates/haproxy.cfg.tpl", {
-    master_nodes = local.master_nodes
-    worker_nodes = local.worker_nodes
-    stats_credentials = var.haproxy_stats_credentials
+# Generate Gateway (Nginx) configuration
+resource "local_file" "gateway_config" {
+  content = templatefile("${path.module}/templates/nginx.conf.tpl", {
+    master_nodes      = local.master_nodes
+    worker_nodes      = local.worker_nodes
   })
-  filename = "${path.module}/generated/haproxy.cfg"
+  filename = "${path.module}/generated/nginx.conf"
 }
 
 # Generate keepalived configuration
 resource "local_file" "keepalived_config" {
-  count = length(local.haproxy_nodes)
+  count = length(local.gateway_nodes)
   
   content = templatefile("${path.module}/templates/keepalived.conf.tpl", {
-    priority      = local.haproxy_nodes[count.index].priority
+    priority      = local.gateway_nodes[count.index].priority
     virtual_ip    = var.virtual_ip
-    interface     = var.network_interface
+    interface     = "ens160" # Force bind to Bridged Interface for VIP
     router_id     = 51
     auth_password = "k8s_vip_secret"
   })
-  filename = "${path.module}/generated/keepalived_${local.haproxy_nodes[count.index].name}.conf"
+  filename = "${path.module}/generated/keepalived_${local.gateway_nodes[count.index].name}.conf"
 }
 
-# Configure HAProxy nodes
-resource "null_resource" "configure_haproxy" {
-  count = length(local.haproxy_nodes)
+# Configure Gateway nodes
+resource "null_resource" "configure_gateway" {
+  count = length(local.gateway_nodes)
   
   triggers = {
-    haproxy_config = local_file.haproxy_config.content_md5
+    nginx_config = local_file.gateway_config.content_md5
     keepalived_config = local_file.keepalived_config[count.index].content_md5
   }
   
-  # Install HAProxy and keepalived
+  # Configure APT Proxy if specified
   provisioner "remote-exec" {
     connection {
       type        = "ssh"
       user        = "ubuntu"
-      host        = local.haproxy_nodes[count.index].ip
+      host        = local.gateway_nodes[count.index].ip
       private_key = file(var.ssh_private_key_path)
     }
-    
+
     inline = [
+      "if [ -n '${var.apt_proxy_url}' ]; then echo 'Acquire::http::Proxy \"${var.apt_proxy_url}\";' | sudo tee /etc/apt/apt.conf.d/01proxy > /dev/null; fi",
       "sudo apt-get update",
-      "sudo apt-get install -y haproxy keepalived",
+      "sudo apt-get install -y nginx keepalived",
     ]
   }
   
-  # Copy HAProxy configuration
+  # Copy Nginx configuration
   provisioner "file" {
-    source      = local_file.haproxy_config.filename
-    destination = "/tmp/haproxy.cfg"
+    source      = local_file.gateway_config.filename
+    destination = "/tmp/nginx.conf"
     
     connection {
       type        = "ssh"
       user        = "ubuntu"
-      host        = local.haproxy_nodes[count.index].ip
+      host        = local.gateway_nodes[count.index].ip
       private_key = file(var.ssh_private_key_path)
     }
   }
@@ -143,7 +143,7 @@ resource "null_resource" "configure_haproxy" {
     connection {
       type        = "ssh"
       user        = "ubuntu"
-      host        = local.haproxy_nodes[count.index].ip
+      host        = local.gateway_nodes[count.index].ip
       private_key = file(var.ssh_private_key_path)
     }
   }
@@ -153,20 +153,19 @@ resource "null_resource" "configure_haproxy" {
     connection {
       type        = "ssh"
       user        = "ubuntu"
-      host        = local.haproxy_nodes[count.index].ip
+      host        = local.gateway_nodes[count.index].ip
       private_key = file(var.ssh_private_key_path)
     }
     
     inline = [
-      "sudo haproxy -c -f /tmp/haproxy.cfg",
-      "sudo cp /tmp/haproxy.cfg /etc/haproxy/haproxy.cfg",
+      "sudo cp /tmp/nginx.conf /etc/nginx/nginx.conf",
       "sudo rm -f /etc/keepalived/keepalived.conf",
       "sudo touch /etc/keepalived/keepalived.conf",
       "sudo chmod 644 /etc/keepalived/keepalived.conf",
       "cat /tmp/keepalived.conf | sudo tee /etc/keepalived/keepalived.conf > /dev/null",
-      "sudo systemctl restart haproxy",
+      "sudo systemctl restart nginx",
       "sudo systemctl restart keepalived",
-      "sudo systemctl enable haproxy",
+      "sudo systemctl enable nginx",
       "sudo systemctl enable keepalived",
     ]
   }
@@ -190,6 +189,7 @@ resource "null_resource" "prepare_kubernetes_nodes" {
     }
     
     inline = [
+      "if [ -n '${var.apt_proxy_url}' ]; then echo 'Acquire::http::Proxy \"${var.apt_proxy_url}\";' | sudo tee /etc/apt/apt.conf.d/01proxy > /dev/null; fi",
       "sudo apt-get update",
       "sudo apt-get install -y apt-transport-https ca-certificates curl gnupg",
       
@@ -217,7 +217,7 @@ resource "null_resource" "prepare_kubernetes_nodes" {
       
       # Download and install crictl
       "ARCH=$(dpkg --print-architecture)",
-      "curl -L https://github.com/kubernetes-sigs/cri-tools/releases/download/v1.28.0/crictl-v1.28.0-linux-$ARCH.tar.gz --output crictl.tar.gz",
+      "curl -L https://github.com/kubernetes-sigs/cri-tools/releases/download/v1.31.1/crictl-v1.31.1-linux-$ARCH.tar.gz --output crictl.tar.gz",
       "sudo tar zxvf crictl.tar.gz -C /usr/local/bin",
       "rm -f crictl.tar.gz",
       
@@ -255,7 +255,7 @@ resource "null_resource" "prepare_kubernetes_nodes" {
 # Initialize Kubernetes control plane
 resource "null_resource" "initialize_kubernetes" {
   depends_on = [
-    null_resource.configure_haproxy,
+    null_resource.configure_gateway,
     null_resource.prepare_kubernetes_nodes
   ]
   
@@ -390,7 +390,12 @@ resource "null_resource" "install_cilium" {
       "sha256sum --check cilium-linux-arm64.tar.gz.sha256sum",
       "sudo tar xzvf cilium-linux-arm64.tar.gz -C /usr/local/bin",
       "rm cilium-linux-arm64.tar.gz{,.sha256sum}",
-      "cilium install --version ${var.cilium_version}",
+      
+      # Install Gateway API CRDs before installing Cilium
+      "kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.1.0/standard-install.yaml",
+      
+      # Install Cilium with Gateway API enabled
+      "cilium install --version ${var.cilium_version} --set gatewayAPI.enabled=true",
       "cilium status --wait",
     ]
   }
@@ -449,4 +454,4 @@ resource "null_resource" "verify_cluster" {
       "kubectl get pods -A -o wide",
     ]
   }
-} 
+}

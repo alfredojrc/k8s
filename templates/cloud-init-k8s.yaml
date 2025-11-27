@@ -15,14 +15,11 @@ write_files:
       network:
         version: 2
         ethernets:
-          enp0s3:
-            addresses:
-              - ${ip}/24
-            nameservers:
-              addresses: [8.8.8.8, 8.8.4.4]
-            routes:
-              - to: 0.0.0.0/0
-                via: ${gateway_ip}
+          ens160:
+            dhcp4: true
+            # vmnet2 (Internal Cluster Network) - 10.10.0.x
+            # DHCP from VMware Fusion provides IP in 10.10.0.128-254 range
+            # NAT gateway at 10.10.0.2 provides internet access
 
   - path: /etc/modules-load.d/k8s.conf
     content: |
@@ -58,9 +55,9 @@ runcmd:
   - sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' /etc/containerd/config.toml
   - systemctl restart containerd
   - systemctl enable containerd
-  # Install Kubernetes components
-  - curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
-  - echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /' > /etc/apt/sources.list.d/kubernetes.list
+  # Install Kubernetes components (Updated: 2025-11-25 to v1.32 - current stable)
+  - curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.32/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+  - echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.32/deb/ /' > /etc/apt/sources.list.d/kubernetes.list
   - apt-get update
   - apt-get install -y kubelet kubeadm kubectl
   - apt-mark hold kubelet kubeadm kubectl 

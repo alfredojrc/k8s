@@ -54,3 +54,33 @@ vm_creation.log
 # Archive directory (if used for temporary backups)
 /archive/
 base_images
+
+# Qdrant vector database (local)
+.env.qdrant
+.env.qdrant.local
+qdrant_storage/
+qdrant_config/
+docker-compose-qdrant.yml
+
+# AI assistant files (personal)
+CLAUDE.md
+GEMINI.md
+TODO.md
+TODO.md.*
+claudedocs/
+
+# Knowledge base (local Qdrant data)
+kb-docs/
+
+# Separate projects
+openapi-to-mcp/
+
+# Backup files
+*.backup.*
+vmInventory_backup
+
+# Temporary/debug scripts
+debug_*.sh
+fix_*.sh
+test_*.sh
+migrate-*.sh

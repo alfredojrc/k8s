@@ -272,8 +272,8 @@ create_cloud_init_iso_local "$VM_INSTANCE_DIR" "$VM_NAME" "$PASSWORD" || { echo 
 create_vmx_file_local "$VM_INSTANCE_DIR" "$VM_NAME" "$VM_MEMORY" "$VM_CPUS" || { echo -e "${RED}Failed to create VMX file.${NC}"; exit 1; }
 
 # Start the VM
-echo -e "${CYAN}Starting VM '$VM_NAME'...${NC}"
-vmrun -T fusion start "$VMX_FILE" || { echo -e "${RED}Failed to start VM.${NC}"; exit 1; }
+echo -e "${CYAN}Starting VM '$VM_NAME' (headless)...${NC}"
+vmrun -T fusion start "$VMX_FILE" nogui || { echo -e "${RED}Failed to start VM.${NC}"; exit 1; }
 
 # Wait for IP
 echo -e "${CYAN}Waiting for VM to boot and get IP address... (may take a minute or two)${NC}"

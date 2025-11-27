@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# set -x # Disable command tracing
 # Consolidated K8s Manager Script
 # This script provides a unified interface for managing a Kubernetes cluster on VMware Fusion
 # It combines functionality from:
@@ -25,8 +26,8 @@ APT_CACHE_SERVER_IP="${K8S_APT_CACHE_SERVER_IP:-192.168.130.153}"
 # Allow overriding defaults via environment variables
 PROJECT_DIR="${K8S_PROJECT_DIR:-$HOME/godz/k8s}"
 VM_CLUSTER_DIR="${K8S_VM_CLUSTER_DIR:-/Users/alf/VMs/k8s_cluster}"
-BASE_IMAGE_PATH="${K8S_BASE_IMAGE_PATH:-$PROJECT_DIR/base_images/noble-server-cloudimg-arm64.img}"
-BASE_IMAGE_URL="${K8S_BASE_IMAGE_URL:-https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-arm64.img}"
+BASE_IMAGE_PATH="${K8S_BASE_IMAGE_PATH:-$PROJECT_DIR/base_images/ubuntu-24.04.3-live-server-arm64.iso}"
+BASE_IMAGE_URL="${K8S_BASE_IMAGE_URL:-https://cdimage.ubuntu.com/releases/24.04.3/release/ubuntu-24.04.3-live-server-arm64.iso}"
 # Use a more secure approach for password
 PASSWORD_FILE="${K8S_PASSWORD_FILE:-$HOME/.k8s_password}"
 # [END_LOCKED_CONFIG]
@@ -90,6 +91,12 @@ check_prerequisites() {
         echo -e "ssh-keygen -t ed25519"
         exit 1
     fi
+
+    # Verify public key exists and is not empty
+    if [ ! -f "$SSH_PUBLIC_KEY" ] || [ ! -s "$SSH_PUBLIC_KEY" ]; then
+        echo -e "${RED}Error: SSH public key not found or empty at $SSH_PUBLIC_KEY${NC}"
+        exit 1
+    fi
     
     # Check if required Terraform files exist
     if [ ! -f "./main.tf" ]; then
@@ -108,8 +115,8 @@ check_prerequisites() {
     fi
     
     # Check if required template files exist
-    if [ ! -f "./templates/haproxy.cfg.tpl" ]; then
-        echo -e "${RED}Error: templates/haproxy.cfg.tpl not found${NC}"
+    if [ ! -f "./templates/gateway.cfg.tpl" ]; then
+        echo -e "${RED}Error: templates/gateway.cfg.tpl not found${NC}"
         exit 1
     fi
     
@@ -142,66 +149,51 @@ check_prerequisites() {
 }
 # [END_LOCKED_FUNCTION]
 
-# Function to remove existing VMs
+# Function to remove existing VMs and unregister them
 remove_existing_vms() {
-    print_header "Removing existing VMs"
+    print_header "Removing Existing VMs and Unregistering from Fusion"
     
-    # Ensure we are in the project directory
     cd "$PROJECT_DIR" || { echo -e "${RED}Error: Failed to change directory to $PROJECT_DIR${NC}"; exit 1; }
 
-    # Get list of running VMs managed by this script
-    # Filter by VM_CLUSTER_DIR to avoid listing unrelated VMs
-    RUNNING_VMS=$(vmrun -T fusion list | grep "$VM_CLUSTER_DIR" | grep -v "Total running VMs" || true)
-    
-    if [ -n "$RUNNING_VMS" ]; then
-        echo -e "${CYAN}Found running VMs:${NC}"
-        echo "$RUNNING_VMS"
+    # Force kill any lingering vmrun processes to prevent locks
+    echo -e "${CYAN}Checking for lingering vmrun processes...${NC}"
+    pkill -9 vmrun || true
+
+    if [ ! -d "$VM_CLUSTER_DIR" ]; then
+        echo -e "${GREEN}VM cluster directory ($VM_CLUSTER_DIR) does not exist. Nothing to remove.${NC}"
+    else
+        VMX_FILES=$(find "$VM_CLUSTER_DIR" -maxdepth 2 -name "*.vmx" -type f || true)
+
+        if [ -n "$VMX_FILES" ]; then
+            echo -e "${CYAN}Found VMs to delete:${NC}"
+            echo "$VMX_FILES"
+            
+            echo -e "${CYAN}Stopping and deleting VMs...${NC}"
+            for vmx_file in $VMX_FILES; do
+                vm_name=$(basename "$(dirname "$vmx_file")" | sed 's/\.vmwarevm//')
+                echo -e "--- Processing VM: $vm_name ---"
+                
+                echo -e "Attempting to stop $vm_name (hard)..."
+                vmrun -T fusion stop "$vmx_file" hard > /dev/null 2>&1 || true
+                
+                echo -e "Deleting and unregistering $vm_name..."
+                # Try vmrun deleteVM but don't fail if it errors
+                vmrun -T fusion deleteVM "$vmx_file" > /dev/null 2>&1 || true
+            done
+        fi
         
-        # Stop each running VM
-        echo -e "${CYAN}Stopping running VMs...${NC}"
-        echo "$RUNNING_VMS" | while read -r VM_PATH; do
-            if [ -n "$VM_PATH" ]; then
-                VM_NAME=$(basename "$(dirname "$VM_PATH")" | sed 's/\.vmwarevm//')
-                echo -e "${CYAN}Stopping VM: $VM_NAME${NC}"
-                vmrun -T fusion stop "$VM_PATH" soft || true
-                sleep 2
-            fi
-        done
-    else
-        echo -e "${GREEN}No running VMs found.${NC}"
-    fi
-    
-    # Remove VM directory if it exists
-    if [ -d "$VM_CLUSTER_DIR" ]; then
-        echo -e "${CYAN}Removing VM directory: $VM_CLUSTER_DIR${NC}"
+        # Aggressive cleanup of the directory
+        echo -e "${CYAN}Force removing VM cluster directory: $VM_CLUSTER_DIR${NC}"
         rm -rf "$VM_CLUSTER_DIR"
-    else
-        echo -e "${GREEN}VM directory does not exist: $VM_CLUSTER_DIR${NC}"
     fi
     
-    # Clean up VM-related files
-    echo -e "${CYAN}Cleaning up VM-related files...${NC}"
+    echo -e "${CYAN}Cleaning up project-related files...${NC}"
+    rm -f "vm-ips.env"
+    rm -rf "generated"
+    rm -f terraform.tfstate terraform.tfstate.backup
     
-    # Remove vm-ips.env if it exists
-    if [ -f "vm-ips.env" ]; then
-        rm -f "vm-ips.env"
-        echo -e "${GREEN}Removed vm-ips.env${NC}"
-    fi
-    
-    # Remove generated directory if it exists
-    if [ -d "generated" ]; then
-        rm -rf "generated"
-        echo -e "${GREEN}Removed generated directory${NC}"
-    else
-        mkdir -p "generated"
-        echo -e "${GREEN}Created generated directory${NC}"
-    fi
-    
-    # Remove Terraform state files if they exist
-    if [ -f "terraform.tfstate" ] || [ -f "terraform.tfstate.backup" ]; then
-        rm -f terraform.tfstate terraform.tfstate.backup
-        echo -e "${GREEN}Removed Terraform state files${NC}"
-    fi
+    # Re-create generated directory
+    mkdir -p "generated"
     
     echo -e "${GREEN}All VMs and related files have been removed.${NC}"
 }
@@ -217,7 +209,7 @@ download_base_image() {
     # Check if base image exists
     if [ ! -f "$BASE_IMAGE_PATH" ]; then
         echo -e "${CYAN}Base image not found. Downloading...${NC}"
-        echo -e "${CYAN}Downloading Ubuntu 24.04 LTS ARM64 cloud image...${NC}"
+        echo -e "${CYAN}Downloading Ubuntu 24.04 LTS ARM64 Server ISO...${NC}"
         curl -L "$BASE_IMAGE_URL" -o "$BASE_IMAGE_PATH"
         
         if [ $? -eq 0 ]; then
@@ -238,23 +230,26 @@ create_vm_disk() {
     local VM_DIR=$1
     local VM_NAME=$2
     local VM_DISK="$VM_DIR/$VM_NAME.vmdk"
+    local VDISKMAN="/Applications/VMware Fusion.app/Contents/Library/vmware-vdiskmanager"
     
-    echo -e "${CYAN}Creating VM disk for $VM_NAME from base image...${NC}" >&2
-    # First convert to qcow2 format (better handling of conversion)
-    TEMP_QCOW2="$VM_DIR/temp_disk.qcow2"
-    echo -e "${CYAN}Converting raw image to qcow2 format...${NC}" >&2
-    qemu-img convert -f raw -O qcow2 "$BASE_IMAGE_PATH" "$TEMP_QCOW2"
+    local CLOUD_IMAGE="$PROJECT_DIR/base_images/noble-preinstalled-server-arm64.img"
+    
+    if [ ! -f "$CLOUD_IMAGE" ]; then
+        echo -e "${RED}Error: Cloud image not found at $CLOUD_IMAGE${NC}" >&2
+        exit 1
+    fi
 
-    # Resize the qcow2 image
-    echo -e "${CYAN}Resizing disk image to $VM_DISK_SIZE...${NC}" >&2
-    qemu-img resize "$TEMP_QCOW2" $VM_DISK_SIZE
-
-    # Convert qcow2 to vmdk for VMware
-    echo -e "${CYAN}Converting to vmdk format...${NC}" >&2
-    qemu-img convert -f qcow2 -O vmdk "$TEMP_QCOW2" "$VM_DISK"
-
-    # Remove temporary file
-    rm -f "$TEMP_QCOW2"
+    echo -e "${CYAN}Converting base image for $VM_NAME...${NC}" >&2
+    
+    # Convert qcow2/img to VMDK using qemu-img (without resizing yet)
+    # Use compatible subformat
+    qemu-img convert -f qcow2 -O vmdk -o subformat=monolithicSparse "$CLOUD_IMAGE" "$VM_DISK" >&2
+    
+    echo -e "${CYAN}Resizing disk to $VM_DISK_SIZE using vmware-vdiskmanager...${NC}" >&2
+    
+    # Resize using native tool to ensure integrity
+    # Note: vmware-vdiskmanager expects size in GB (e.g. 40GB)
+    "$VDISKMAN" -x "$VM_DISK_SIZE" "$VM_DISK" >&2
 }
 # [END_LOCKED_DISK_CREATION]
 
@@ -269,13 +264,7 @@ create_cloud_init_iso() {
     
     echo -e "${CYAN}Creating cloud-init configuration for $VM_NAME...${NC}"
 
-    # Create meta-data file
-    cat > "$VM_DIR/meta-data" << EOF
-instance-id: $VM_NAME
-local-hostname: $VM_NAME
-EOF
-
-    # Create user-data file
+    # Create user-data file (Standard Cloud-Config for pre-installed image)
     cat > "$VM_DIR/user-data" << EOF
 #cloud-config
 hostname: $VM_NAME
@@ -287,58 +276,33 @@ users:
     groups: sudo
     shell: /bin/bash
     lock_passwd: false
-    # Password is $PASSWORD
     passwd: $(openssl passwd -6 "$PASSWORD")
     ssh_authorized_keys:
       - $(cat "$SSH_PUBLIC_KEY")
-package_update: true
-package_upgrade: true
-packages:
-  - open-vm-tools # Add VMware Tools for vmrun commands
-  - qemu-guest-agent
-  - net-tools
-  - curl
-  - wget
-  - vim
-  - htop
-  - tmux
-  - bash-completion
-runcmd:
-  - systemctl enable qemu-guest-agent
-  - systemctl start qemu-guest-agent
-  # Configure APT proxy if IP is provided
-  $( [ -n "$apt_cache_ip" ] && echo "  - echo 'Acquire::http::Proxy \"http://$apt_cache_ip:3142\";' > /etc/apt/apt.conf.d/01proxy" || echo "")
-  - echo "ubuntu:$PASSWORD" | chpasswd
-  - echo "PermitRootLogin no" >> /etc/ssh/sshd_config
-  - echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config
-  - systemctl restart sshd
-power_state:
-  mode: reboot
-  timeout: 30
-  condition: True
+ssh_pwauth: true
+chpasswd:
+  expire: false
 EOF
 
-    # Create network-config file
-    cat > "$VM_DIR/network-config" << EOF
-version: 2
-ethernets:
-  ens160:
-    dhcp4: true
-    dhcp6: false
+    # Create empty meta-data file (required by cloud-init)
+    # Some cloud-init versions prefer valid meta-data
+    cat > "$VM_DIR/meta-data" << EOF
+instance-id: $instance_id
+local-hostname: $VM_NAME
 EOF
 
     # Create cloud-init ISO
     echo -e "${CYAN}Creating cloud-init ISO...${NC}"
-    mkisofs -output "$CLOUD_INIT_ISO" -volid cidata -joliet -rock "$VM_DIR/user-data" "$VM_DIR/meta-data" "$VM_DIR/network-config"
+    mkisofs -output "$CLOUD_INIT_ISO" -volid cidata -joliet -rock "$VM_DIR/user-data" "$VM_DIR/meta-data" >&2
 }
 
-# [LOCKED_VMX: Do not modify the VMX file structure]
 # Function to create VMX file for a VM
 create_vmx_file() {
     local VM_DIR=$1
     local VM_NAME=$2
     local VM_MEMORY=$3
     local VM_CPUS=$4
+    local IS_GATEWAY=$5 # "true" or "false"
     local VMX_FILE="$VM_DIR/$VM_NAME.vmx"
     
     echo -e "${CYAN}Creating VMX file...${NC}"
@@ -346,11 +310,6 @@ create_vmx_file() {
 .encoding = "UTF-8"
 config.version = "8"
 virtualHW.version = "21"
-numvcpus = "$VM_CPUS"
-memsize = "$VM_MEMORY"
-displayName = "$VM_NAME"
-guestOS = "arm-ubuntu-64"
-mks.enable3d = "FALSE"
 pciBridge0.present = "TRUE"
 pciBridge4.present = "TRUE"
 pciBridge4.virtualDev = "pcieRootPort"
@@ -364,237 +323,140 @@ pciBridge6.functions = "8"
 pciBridge7.present = "TRUE"
 pciBridge7.virtualDev = "pcieRootPort"
 pciBridge7.functions = "8"
-vmci0.present = "TRUE"
-hpet0.present = "TRUE"
-sata0.present = "TRUE"
+numvcpus = "$VM_CPUS"
+memsize = "$VM_MEMORY"
+displayName = "$VM_NAME"
+guestOS = "arm-ubuntu-64"
+firmware = "efi"
 nvme0.present = "TRUE"
 nvme0:0.present = "TRUE"
 nvme0:0.fileName = "$VM_NAME.vmdk"
-sata0:1.present = "TRUE"
-sata0:1.fileName = "$VM_NAME-cloud-init.iso"
-sata0:1.deviceType = "cdrom-image"
+sata0.present = "TRUE"
+sata0:0.present = "TRUE"
+sata0:0.fileName = "$VM_DIR/$VM_NAME-cloud-init.iso"
+sata0:0.deviceType = "cdrom-image"
+sata0:0.startConnected = "TRUE"
+bios.bootOrder = "hdd,cdrom"
+mks.enable3d = "FALSE"
+EOF
+
+    if [ "$IS_GATEWAY" == "true" ]; then
+        # Dual NICs for Gateway (Bridged LAN + vmnet2 Internal Cluster)
+        cat >> "$VMX_FILE" << EOF
 ethernet0.present = "TRUE"
-ethernet0.connectionType = "nat"
-ethernet0.virtualDev = "e1000e"
+ethernet0.connectionType = "bridged"
+ethernet0.virtualDev = "vmxnet3"
 ethernet0.wakeOnPcktRcv = "FALSE"
 ethernet0.addressType = "generated"
-usb.present = "TRUE"
-ehci.present = "TRUE"
-usb_xhci.present = "TRUE"
-floppy0.present = "FALSE"
-firmware = "efi"
-tools.syncTime = "TRUE"
-powerType.powerOff = "soft"
-powerType.powerOn = "soft"
-powerType.suspend = "soft"
-powerType.reset = "soft"
+ethernet1.present = "TRUE"
+ethernet1.connectionType = "custom"
+ethernet1.vnet = "vmnet2"
+ethernet1.virtualDev = "vmxnet3"
+ethernet1.wakeOnPcktRcv = "FALSE"
+ethernet1.addressType = "generated"
 EOF
-}
-# [END_LOCKED_VMX]
-
-# Function to update VM IPs file
-update_vm_ips() {
-    print_header "Updating VM IP addresses"
-    
-    cd "$PROJECT_DIR" || { echo -e "${RED}Error: Failed to change directory to $PROJECT_DIR${NC}"; exit 1; }
-
-    if [ ! -d "$VM_CLUSTER_DIR" ]; then
-        echo -e "${RED}Error: VM directory not found: $VM_CLUSTER_DIR${NC}"
-        echo -e "${CYAN}Please create VMs first.${NC}"
-        return
+    else
+        # Single NIC for Nodes (vmnet2 Internal Cluster)
+        cat >> "$VMX_FILE" << EOF
+ethernet0.present = "TRUE"
+ethernet0.connectionType = "custom"
+ethernet0.vnet = "vmnet2"
+ethernet0.virtualDev = "vmxnet3"
+ethernet0.wakeOnPcktRcv = "FALSE"
+ethernet0.addressType = "generated"
+EOF
     fi
-    
-    # Get list of VM directories
-    VMWARE_VM_DIRS=$(find "$VM_CLUSTER_DIR" -maxdepth 1 -name "*.vmwarevm" -type d)
-    
-    if [ -z "$VMWARE_VM_DIRS" ]; then
-        echo -e "${RED}Error: No VMs found in $VM_CLUSTER_DIR${NC}"
-        return
-    fi
-    
-    # Create empty vm-ips.env file
-    echo -e "${CYAN}Creating new vm-ips.env file...${NC}"
-    rm -f vm-ips.env
-    touch vm-ips.env
-    
-    local found_ips=0
-    local warned_vms=0
-
-    # Get IP for each VM found in the cluster directory
-    for VM_DIR in $VMWARE_VM_DIRS; do
-        VM_NAME=$(basename "$VM_DIR" | sed 's/\.vmwarevm//')
-        VMX_FILE="$VM_DIR/$VM_NAME.vmx"
-        
-        echo -e "${CYAN}Checking status for VM: $VM_NAME${NC}"
-        
-        if [ ! -f "$VMX_FILE" ]; then
-            echo -e "${RED}Error: VMX file not found for $VM_NAME${NC}"
-            continue
-        fi
-        
-        # Check if VM is running
-        if vmrun -T fusion list | grep -q -F "$VMX_FILE"; then
-            echo -e "${CYAN}VM $VM_NAME is running. Getting IP address...${NC}"
-            VM_IP=$(vmrun -T fusion getGuestIPAddress "$VMX_FILE" -wait 2>/dev/null || echo "")
-            
-            # Validate that we got a valid IP address
-            if [[ $VM_IP =~ ^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$ ]]; then
-                echo -e "${GREEN}VM $VM_NAME IP address: $VM_IP${NC}"
-                
-                # Format name for vm-ips.env
-                ENV_NAME=$(echo "$VM_NAME" | sed 's/k8s-//g')_ip
-                
-                # Add IP to vm-ips.env
-                echo "$ENV_NAME = \\\"$VM_IP\\\"" >> vm-ips.env
-                found_ips=$((found_ips + 1))
-            else
-                echo -e "${RED}Could not get a valid IP address for running VM $VM_NAME. VMware Tools might not be running or network is not ready.${NC}"
-                warned_vms=$((warned_vms + 1))
-            fi
-        else
-            echo -e "${CYAN}VM $VM_NAME is not running. Skipping IP retrieval.${NC}"
-            warned_vms=$((warned_vms + 1))
-        fi
-    done
-    
-    # Check if all required VMs have entries in the generated file
-    local MISSING_VMS=false
-    local REQUIRED_VMS=("haproxy1" "haproxy2" "k8s-master1" "k8s-master2" "k8s-master3" "k8s-worker1" "k8s-worker2")
-    
-    for VM in "${REQUIRED_VMS[@]}"; do
-        ENV_NAME=$(echo "$VM" | sed 's/k8s-//g')_ip
-        if ! grep -q "$ENV_NAME" vm-ips.env; then
-            echo -e "${RED}Missing IP address for VM $VM in vm-ips.env${NC}"
-            MISSING_VMS=true
-        fi
-    done
-    
-    if [ "$MISSING_VMS" = true ]; then
-        echo -e "${RED}Some VMs are missing from vm-ips.env. This may cause issues with Terraform deployment.${NC}"
-    fi
-    
-    # Display IP addresses
-    echo -e "\n${GREEN}Updated VM IP addresses:${NC}"
-    cat vm-ips.env
-    
-    echo -e "\n${GREEN}VM IPs have been updated successfully.${NC}"
 }
 
-# Function to create a single VM
+# Function to create a single VM (Minimal Cloud-Init Only)
 create_single_vm() {
     local vm_name=$1
     local memory=$2
     local cpus=$3
     
-    echo -e "\\n${CYAN}Creating VM: $vm_name (Memory: ${memory}MB, CPUs: ${cpus})${NC}" >&2
+    # Determine if this is a gateway based on name
+    local is_gateway="false"
+    if [[ "$vm_name" == "gateway"* ]]; then
+        is_gateway="true"
+    fi
+    
+    echo -e "\\n${CYAN}Creating VM (Installer ISO): $vm_name (Memory: ${memory}MB, CPUs: ${cpus}, Gateway: $is_gateway)${NC}" >&2
     
     # Setup VM directory
     local VM_DIR="$VM_CLUSTER_DIR/$vm_name.vmwarevm"
     local VMX_FILE="$VM_DIR/$vm_name.vmx"
     
-    # Delete existing VM if it exists (ensure it's stopped first)
-    if vmrun -T fusion list | grep -q -F "$VMX_FILE"; then
-        echo "Stopping existing VM $vm_name..." >&2
-        vmrun -T fusion stop "$VMX_FILE" hard || { 
-            echo -e "${RED}Error: Failed to stop existing VM $vm_name. Please stop it manually.${NC}" >&2; 
-            # Decide if we should exit or continue. Exiting is safer.
-            exit 1; 
-        }
-        # Short pause after stopping
-        sleep 5 
-    fi
-    
     if [ -d "$VM_DIR" ]; then
         echo "Deleting existing VM directory: $VM_DIR" >&2
         rm -rf "$VM_DIR"
     fi
-    
-    # Create VM directory
-    echo "Creating VM directory: $VM_DIR" >&2
     mkdir -p "$VM_DIR"
     
-    # Load password
-    if [ ! -f "$PASSWORD_FILE" ]; then
-        echo -e "${RED}Error: Password file not found at $PASSWORD_FILE${NC}" >&2
+    create_vm_disk "$VM_DIR" "$vm_name" >&2 || { echo -e "${RED}Error creating disk for $vm_name${NC}" >&2; exit 1; }
+    
+    # Pass is_gateway to cloud-init creator if we need to customize network config
+    # For now, standard cloud-init is likely fine if we rely on DHCP for both interfaces
+    create_cloud_init_iso "$VM_DIR" "$vm_name" "$(cat "$PASSWORD_FILE")" "" >&2 || { echo -e "${RED}Error creating cloud-init ISO for $vm_name${NC}" >&2; exit 1; }
+    
+    create_vmx_file "$VM_DIR" "$vm_name" "$memory" "$cpus" "$is_gateway" >&2 || { echo -e "${RED}Error creating VMX file for $vm_name${NC}" >&2; exit 1; }
+    
+    # Start the VM headless
+    echo -e "${CYAN}Starting VM $vm_name (headless)...${NC}" >&2
+    # Use perl setsid to completely detach the process from the current session and process group
+    # This prevents SIGHUP when the script/shell exits
+    perl -e 'use POSIX qw(setsid); setsid(); exec(@ARGV)' -- \
+        vmrun -T fusion start "$VMX_FILE" gui > "generated/ips/${vm_name}.vmrun.log" 2>&1 &
+    
+    echo -e "${GREEN}VM $vm_name started command issued.${NC}" >&2
+    echo -e "${CYAN}Waiting 10s for VM to stabilize...${NC}" >&2
+    sleep 10
+
+    # Verify VM is actually running
+    if ! vmrun -T fusion list | grep -q "$VMX_FILE"; then
+        echo -e "${RED}Error: VM $vm_name failed to start or crashed immediately.${NC}" >&2
+        echo -e "${RED}Check generated/ips/${vm_name}.vmrun.log and the VM's vmware.log for details.${NC}" >&2
         exit 1
     fi
-    PASSWORD=$(cat "$PASSWORD_FILE")
+
+    echo -e "${CYAN}Waiting for VM $vm_name to obtain IP address...${NC}" >&2
     
-    # Create VM components
-    # Use full path for BASE_IMAGE_PATH just in case CWD changes unexpectedly elsewhere
-    # (though it shouldn't in this flow)
-    create_vm_disk "$VM_DIR" "$vm_name" || { echo -e "${RED}Error creating disk for $vm_name${NC}" >&2; exit 1; }
-    create_cloud_init_iso "$VM_DIR" "$vm_name" "$PASSWORD" "$APT_CACHE_SERVER_IP" || { echo -e "${RED}Error creating cloud-init ISO for $vm_name${NC}" >&2; exit 1; }
-    create_vmx_file "$VM_DIR" "$vm_name" "$memory" "$cpus" || { echo -e "${RED}Error creating VMX file for $vm_name${NC}" >&2; exit 1; }
-    
-    # Start the VM
-    echo -e "${CYAN}Starting VM $vm_name...${NC}" >&2
-    vmrun -T fusion start "$VMX_FILE" || { echo -e "${RED}Error starting VM $vm_name${NC}" >&2; exit 1; }
-    
-    echo -e "${GREEN}VM $vm_name created and started successfully!${NC}" >&2
-    echo -e "${CYAN}Waiting for VM $vm_name to boot and get an IP address...${NC}" >&2
-    
-    # Wait for VM to boot and get IP address
-    local VM_IP=""
-    local MAX_ATTEMPTS=30 # Increased attempts
-    local ATTEMPT=0
-    
-    while [ -z "$VM_IP" ] && [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
-        ATTEMPT=$((ATTEMPT+1))
-        echo -e "${CYAN}Attempting to get IP for $vm_name ($ATTEMPT/$MAX_ATTEMPTS)...${NC}" >&2
-        VM_IP=$(vmrun -T fusion getGuestIPAddress "$VMX_FILE" -wait 2>/dev/null || echo "")
-        # Basic validation within the loop
-        if [[ $VM_IP =~ ^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$ ]]; then
-             echo -e "${GREEN}Got IP for $vm_name: $VM_IP${NC}" >&2
-             break # Exit loop on success
-        else
-             VM_IP="" # Reset IP if invalid
-             sleep 10
+    # Wait for IP address
+    local ip=""
+    local retries=60 # Increased retries (5 mins total)
+    while [ $retries -gt 0 ]; do
+        ip=$(vmrun -T fusion getGuestIPAddress "$VMX_FILE" -wait 2>/dev/null || true)
+        # Trim whitespace
+        ip=$(echo "$ip" | xargs)
+        if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            break
         fi
+        sleep 5
+        retries=$((retries-1))
+        echo -n "." >&2
     done
-    
-    if [ -z "$VM_IP" ]; then
-        echo -e "${RED}Failed to get IP address for $vm_name after $MAX_ATTEMPTS attempts${NC}" >&2
-        echo -e "${RED}Check VMware Tools status inside the VM.${NC}" >&2
-        # Attempt to stop the VM before exiting? Maybe not, let user handle it.
+    echo "" >&2
+
+    if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo -e "${GREEN}VM $vm_name obtained IP: $ip${NC}" >&2
+        echo "$ip" # Output IP to stdout for capture
+    else
+        echo -e "${RED}Error: Failed to get IP address for $vm_name after timeout.${NC}" >&2
         exit 1
     fi
-    
-    # Wait for SSH to be available
-    echo -e "${CYAN}Waiting for SSH on $vm_name ($VM_IP) to be available...${NC}" >&2
-    local SSH_AVAILABLE=false
-    local SSH_ATTEMPTS=0
-    local MAX_SSH_ATTEMPTS=18 # Increased attempts
-    
-    while [ "$SSH_AVAILABLE" = false ] && [ $SSH_ATTEMPTS -lt $MAX_SSH_ATTEMPTS ]; do
-        SSH_ATTEMPTS=$((SSH_ATTEMPTS+1))
-        echo -e "${CYAN}Checking SSH connection to $vm_name ($ATTEMPTS/$MAX_SSH_ATTEMPTS)...${NC}" >&2
-        if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -o BatchMode=yes ubuntu@$VM_IP "echo SSH connection successful" &>/dev/null; then
-            SSH_AVAILABLE=true
-            echo -e "${GREEN}SSH connection to $vm_name successful${NC}" >&2
-        else
-            sleep 10
-        fi
-    done
-    
-    if [ "$SSH_AVAILABLE" = false ]; then
-        echo -e "${RED}Failed to establish SSH connection to $vm_name after $MAX_SSH_ATTEMPTS attempts${NC}" >&2
-        echo -e "${RED}Check SSH service and firewall settings inside the VM.${NC}" >&2
-        exit 1
-    fi
-    
-    # Install basic packages (optional, could be moved to cloud-init if preferred)
-    # Redirecting output to /dev/null for cleaner parallel execution logs
-    echo -e "${CYAN}Installing basic packages on $vm_name...${NC}" >&2
-    ssh -o StrictHostKeyChecking=no -o BatchMode=yes ubuntu@$VM_IP "sudo apt-get update > /dev/null && sudo apt-get install -y neovim tmux bash-completion curl wget htop net-tools > /dev/null" || {
-        echo -e "${RED}Failed to install basic packages on $vm_name${NC}" >&2
-        # Decide if this is critical, maybe just warn
-        # exit 1
-    }
-    
-    # Output the IP address to stdout for capture
-    echo "$VM_IP"
 }
+
+# Adjust calling functions (create_vms and create_single_vm_for_debug)
+# to handle the lack of IP return and the need for manual step
+
+# Function create_vms needs update:
+# ... (inside create_vms loop or wait section) ...
+# Remove IP capture and vm-ips.env update
+# Print message about manual configuration step needed
+
+# Function create_single_vm_for_debug needs update:
+# ... (after calling create_single_vm) ...
+# Remove IP capture and vm-ips.env update
+# Print message about manual configuration step needed
 
 # [LOCKED_FUNCTION: Do not modify the VM creation process] - Implementing Staggered Parallel Launch
 # Function to create all VMs with staggered parallel launch
@@ -617,8 +479,8 @@ create_vms() {
     
     # Define VMs to be created in order: name:memory:cpus
     local vms_to_create_ordered=(
-        "haproxy1:2048:2"
-        "haproxy2:2048:2"
+        "gateway1:2048:2"
+        "gateway2:2048:2"
         "k8s-master1:4096:4"
         "k8s-master2:4096:4"
         "k8s-master3:4096:4"
@@ -641,8 +503,11 @@ create_vms() {
         # Run create_single_vm in the background
         # Redirect stdout (the IP) to a temporary file
         # Redirect stderr to a log file per VM for easier debugging
-        create_single_vm "$vm_name" "$memory" "$cpus" > "generated/ips/${vm_name}.ip" 2> "generated/ips/${vm_name}.log" &
-        pids+=($!) # Store the PID of the background job
+        # Run create_single_vm sequentially
+        # Redirect stdout (the IP) to a temporary file
+        # Redirect stderr to a log file per VM for easier debugging
+        create_single_vm "$vm_name" "$memory" "$cpus" > "generated/ips/${vm_name}.ip" 2> "generated/ips/${vm_name}.log"
+        pids+=($!) # This will be empty or invalid for sequential, but we'll adjust the wait loop later
         vm_names_ordered+=("$vm_name") # Store the name in the order launched
 
         # Add delay between launches, except after the last VM
@@ -652,24 +517,23 @@ create_vms() {
         fi
     done
 
-    echo -e "${CYAN}All VM creation jobs launched. Waiting for completion...${NC}"
+    echo -e "${CYAN}All VM creation jobs completed.${NC}"
     local all_success=true
     local failed_vms=()
     local success_vms=()
 
-    # Wait for all background jobs to complete
-    for i in "${!pids[@]}"; do
-        pid=${pids[$i]}
-        vm_name=${vm_names_ordered[$i]}
-        if wait "$pid"; then
-            echo -e "${GREEN}VM creation job for $vm_name (PID $pid) completed successfully.${NC}"
-            success_vms+=("$vm_name")
+    # Check status of each VM (since we are sequential, we just check if the IP file exists and is valid)
+    for vm_name in "${vm_names_ordered[@]}"; do
+        if [ -f "generated/ips/${vm_name}.ip" ] && [ -s "generated/ips/${vm_name}.ip" ]; then
+             echo -e "${GREEN}VM creation for $vm_name completed successfully.${NC}"
+             success_vms+=("$vm_name")
         else
-            echo -e "${RED}VM creation job for $vm_name (PID $pid) failed. Check logs: generated/ips/${vm_name}.log${NC}"
-            all_success=false
-            failed_vms+=("$vm_name")
+             echo -e "${RED}VM creation for $vm_name failed. Check logs: generated/ips/${vm_name}.log${NC}"
+             failed_vms+=("$vm_name")
+             all_success=false
         fi
     done
+
 
     if [ "$all_success" = false ]; then
         echo -e "${RED}One or more VM creation jobs failed: ${failed_vms[*]}${NC}"
@@ -697,11 +561,11 @@ create_vms() {
         
         ip_file="generated/ips/${vm_name}.ip"
         if [ -f "$ip_file" ]; then
-            ip=$(cat "$ip_file")
+            ip=$(cat "$ip_file" | xargs) # Trim whitespace
             # Validate IP read from file
-            if [[ $ip =~ ^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$ ]]; then
-                env_name=$(echo "$vm_name" | sed \'s/k8s-//g\')_ip
-                echo "$env_name = \\\"$ip\\\"" >> vm-ips.env
+            if [[ $ip =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                env_name=$(echo "$vm_name" | sed 's/k8s-//g')_ip
+                echo "$env_name = \"$ip\"" >> vm-ips.env
                 echo -e "${GREEN}Added IP for $vm_name to vm-ips.env${NC}"
             else
                 echo -e "${RED}Warning: Invalid IP found in $ip_file for successful VM $vm_name: '$ip'${NC}"
@@ -724,15 +588,15 @@ create_vms() {
     
     # Verify that all *required* VMs have valid entries in vm-ips.env
     local check_failed=false
-    required_vms=("haproxy1_ip" "haproxy2_ip" "master1_ip" "master2_ip" "master3_ip" "worker1_ip" "worker2_ip")
+    required_vms=("gateway1_ip" "gateway2_ip" "master1_ip" "master2_ip" "master3_ip" "worker1_ip" "worker2_ip")
     for vm_env_var in "${required_vms[@]}"; do
         if ! grep -q "^${vm_env_var} " vm-ips.env; then
             echo -e "${RED}Error: Required VM $vm_env_var not found in vm-ips.env.${NC}"
             check_failed=true
         else
             # Check if the IP is valid in the file
-            ip=$(grep "^${vm_env_var} " vm-ips.env | cut -d \'\"\' -f 2)
-            if [[ ! $ip =~ ^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$ ]]; then
+            ip=$(grep "^${vm_env_var} " vm-ips.env | cut -d '"' -f 2)
+            if [[ ! $ip =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
                 echo -e "${RED}Error: Invalid IP address found for $vm_env_var in vm-ips.env: $ip${NC}"
                 check_failed=true
             fi
@@ -802,15 +666,14 @@ deploy_kubernetes() {
     fi
     
     # Ask for confirmation before applying
-    read -p "Do you want to apply these changes? (yes/no): " confirm
-    if [[ "$confirm" != "yes" ]]; then
+    if ! confirm_action "Do you want to apply these changes?"; then
         echo -e "${CYAN}Aborting deployment.${NC}"
         exit 0
     fi
 
     # Run terraform apply (without auto-approve)
     echo -e "\\n${CYAN}Running terraform apply...${NC}"
-    terraform apply 
+    terraform apply -auto-approve 
     
     if [ $? -ne 0 ]; then
         echo -e "${RED}Error: terraform apply failed. Please check the errors above.${NC}"
@@ -868,8 +731,8 @@ verify_connectivity() {
         # Map env var name (e.g., master1_ip) to a display name (e.g., Master1)
         local display_name=""
         case "$key" in
-            haproxy1_ip) display_name="HAProxy1" ;;
-            haproxy2_ip) display_name="HAProxy2" ;;
+            gateway1_ip) display_name="Gateway1" ;;
+            gateway2_ip) display_name="Gateway2" ;;
             master1_ip) display_name="Master1" ;;
             master2_ip) display_name="Master2" ;;
             master3_ip) display_name="Master3" ;;
@@ -891,7 +754,7 @@ verify_connectivity() {
         ip=${vm_ips[$name]}
         echo -n "Checking $name ($ip)... "
         # Use BatchMode=yes to prevent password prompts if key auth fails
-        if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -o BatchMode=yes ubuntu@$ip "echo -n 'OK'" 2>/dev/null; then
+        if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -o BatchMode=yes ubuntu@$ip "echo -n 'OK'" 2>/dev/null; then
             echo -e "${GREEN}OK${NC}"
         else
             echo -e "${RED}Failed${NC}"
@@ -915,11 +778,7 @@ create_all_vms() {
     # Check if VMs already exist
     if [ -d "$VM_CLUSTER_DIR" ] && [ "$(find "$VM_CLUSTER_DIR" -name "*.vmwarevm" -type d | wc -l)" -gt 0 ]; then
         echo -e "${CYAN}VMs already exist in $VM_CLUSTER_DIR${NC}"
-        echo -e "${CYAN}Do you want to delete existing VMs and create new ones? (y/n)${NC}"
-        read -p "" -n 1 -r
-        echo
-        
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        if ! confirm_action "Do you want to delete existing VMs and create new ones?"; then
             echo -e "${CYAN}VM creation cancelled.${NC}"
             return
         fi
@@ -993,8 +852,8 @@ power_on_all_vms() {
         if vmrun -T fusion list | grep -q "$VMX_FILE"; then
             echo -e "${GREEN}VM $VM_NAME is already running.${NC}"
         else
-            echo -e "${CYAN}Starting VM $VM_NAME...${NC}"
-            vmrun -T fusion start "$VMX_FILE" || echo -e "${RED}Failed to start VM $VM_NAME${NC}"
+            echo -e "${CYAN}Starting VM $VM_NAME (headless)...${NC}"
+            vmrun -T fusion start "$VMX_FILE" gui || echo -e "${RED}Failed to start VM $VM_NAME${NC}"
         fi
     done
     
@@ -1025,11 +884,7 @@ shutdown_all_vms() {
     echo "$RUNNING_VMS"
     
     # Confirm shutdown
-    echo -e "${CYAN}Are you sure you want to shutdown all VMs? (y/n)${NC}"
-    read -p "" -n 1 -r
-    echo
-    
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+    if ! confirm_action "Are you sure you want to shutdown all VMs?"; then
         echo -e "${CYAN}Shutdown cancelled.${NC}"
         return
     fi
@@ -1053,11 +908,8 @@ shutdown_all_vms() {
     if [ -n "$RUNNING_VMS_AFTER" ]; then
         echo -e "${RED}Some VMs are still running:${NC}"
         echo "$RUNNING_VMS_AFTER"
-        echo -e "${CYAN}Do you want to force power off these VMs? (y/n)${NC}"
-        read -p "" -n 1 -r
-        echo
         
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
+        if confirm_action "Do you want to force power off these VMs?"; then
             echo -e "${CYAN}Force powering off remaining VMs...${NC}"
             echo "$RUNNING_VMS_AFTER" | while read -r VM_PATH; do
                 if [ -n "$VM_PATH" ]; then
@@ -1086,16 +938,6 @@ check_vms() {
     
     echo -e "${CYAN}VM cluster directory: $VM_CLUSTER_DIR${NC}"
     
-    # Check vm-ips.env
-    if [ ! -f "vm-ips.env" ]; then
-        echo -e "${RED}Error: vm-ips.env not found. VM information is missing.${NC}"
-        echo -e "${CYAN}This file is required for Terraform configuration.${NC}"
-        return
-    fi
-    
-    echo -e "${CYAN}VM IP Addresses from vm-ips.env:${NC}"
-    cat vm-ips.env | sed 's/ = /: /g'
-    
     # Get list of VMs - properly handle spaces in path
     VMWARE_VM_DIRS=$(find "$VM_CLUSTER_DIR" -maxdepth 1 -name "*.vmwarevm" -type d)
     
@@ -1117,9 +959,6 @@ check_vms() {
         VM_NAME=$(basename "$VM_DIR" | sed 's/\.vmwarevm//')
         VMX_FILE="$VM_DIR/$VM_NAME.vmx"
         
-        # Get the env var name from VM name
-        ENV_NAME=$(echo "$VM_NAME" | sed 's/k8s-//g')_ip
-        
         echo -e "\n${CYAN}VM: $VM_NAME${NC}"
         echo -e "${CYAN}VM path: $VM_DIR${NC}"
         echo -e "${CYAN}VMX file: $VMX_FILE${NC}"
@@ -1134,68 +973,11 @@ check_vms() {
             VM_IP=$(vmrun -T fusion getGuestIPAddress "$VMX_FILE" 2>/dev/null || echo "Unknown")
             echo -e "${GREEN}Status: Running${NC}"
             echo -e "${GREEN}IP address: $VM_IP${NC}"
-            
-            # Compare with vm-ips.env
-            VM_ENV_IP=$(grep "${ENV_NAME}" vm-ips.env 2>/dev/null | cut -d '"' -f 2 || echo "")
-            
-            if [ "$VM_ENV_IP" != "$VM_IP" ] && [ -n "$VM_ENV_IP" ]; then
-                echo -e "${RED}Warning: IP address mismatch!${NC}"
-                echo -e "${RED}Current IP: $VM_IP${NC}"
-                echo -e "${RED}IP in vm-ips.env: $VM_ENV_IP${NC}"
-            fi
-            
-            # Try to check network interface in VM
-            if [ "$VM_IP" != "Unknown" ]; then
-                echo -e "${CYAN}Checking network interfaces in VM...${NC}"
-                ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 ubuntu@$VM_IP "ip addr show | grep -E 'inet.*global'" 2>/dev/null || echo -e "${RED}Could not connect to VM to check network interfaces${NC}"
-            fi
         else
             echo -e "${RED}Status: Not running${NC}"
             POWERED_OFF_VMS+=("$VM_NAME")
         fi
     done
-    
-    # Validate vm-ips.env against running VMs
-    print_header "Validating vm-ips.env file"
-    echo -e "${CYAN}Checking if all VM IPs in vm-ips.env are reachable...${NC}"
-    
-    if [ -f "vm-ips.env" ] && [ -s "vm-ips.env" ]; then
-        # Process the vm-ips.env file line by line
-        while IFS= read -r line; do
-            # Skip empty lines
-            [ -z "$line" ] && continue
-            
-            # Extract the VM name and IP
-            if [[ "$line" =~ ([a-zA-Z0-9_]+)\ =\ \"([0-9.]+)\" ]]; then
-                name="${BASH_REMATCH[1]}"
-                ip="${BASH_REMATCH[2]}"
-                
-                # Extract the VM name by removing the _ip suffix
-                vm_name=${name%_ip}
-                
-                # Make the display name nicer
-                case "$vm_name" in
-                    haproxy1) display_name="HAProxy1" ;;
-                    haproxy2) display_name="HAProxy2" ;;
-                    master1) display_name="Master1" ;;
-                    master2) display_name="Master2" ;;
-                    master3) display_name="Master3" ;;
-                    worker1) display_name="Worker1" ;;
-                    worker2) display_name="Worker2" ;;
-                    *) display_name="$vm_name" ;;
-                esac
-                
-                echo -e "${CYAN}Checking $display_name ($ip)...${NC}"
-                if ping -c 1 -W 2 "$ip" &>/dev/null; then
-                    echo -e "${GREEN}$display_name is reachable.${NC}"
-                else
-                    echo -e "${RED}Warning: $display_name is not reachable. This may cause issues with deployment.${NC}"
-                fi
-            fi
-        done < vm-ips.env
-    else
-        echo -e "${RED}Error: vm-ips.env is empty or has an incorrect format.${NC}"
-    fi
     
     # If there are powered off VMs, suggest starting them
     if [ ${#POWERED_OFF_VMS[@]} -gt 0 ]; then
@@ -1204,11 +986,7 @@ check_vms() {
             echo -e "${CYAN}  - $VM${NC}"
         done
         
-        echo -e "\n${CYAN}Would you like to power on these VMs now? (y/n)${NC}"
-        read -p "" -n 1 -r
-        echo
-        
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
+        if confirm_action "Would you like to power on these VMs now?"; then
             power_on_all_vms
         else
             echo -e "${CYAN}You can power on all VMs later by selecting the 'Power on all VMs' option from the main menu.${NC}"
@@ -1222,7 +1000,14 @@ create_snapshots() {
     
     cd "$PROJECT_DIR" || { echo -e "${RED}Error: Failed to change directory to $PROJECT_DIR${NC}"; exit 1; }
 
-    read -p "Enter a name for the snapshot: " snapshot_name
+    local snapshot_name
+    if [ "$AUTO_CONFIRM" = true ]; then
+        snapshot_name="autosnap-$(date +%Y%m%d-%H%M%S)"
+        echo -e "${CYAN}Auto-generated snapshot name: $snapshot_name${NC}"
+    else
+        read -p "Enter a name for the snapshot: " snapshot_name
+    fi
+
     if [ -z "$snapshot_name" ]; then
         echo -e "${RED}Snapshot name cannot be empty. Aborting.${NC}"
         return 1
@@ -1241,7 +1026,26 @@ create_snapshots() {
     for vmx_file in $VMX_FILES; do
         vm_name=$(basename "$(dirname "$vmx_file")" | sed 's/\\.vmwarevm//')
         echo -n "Creating snapshot for $vm_name... "
-        if vmrun -T fusion snapshot "$vmx_file" "$snapshot_name"; then
+        # Run vmrun in background to handle potential hangs in GUI mode
+        vmrun -T fusion snapshot "$vmx_file" "$snapshot_name" > /dev/null 2>&1 &
+        local pid=$!
+        
+        # Wait up to 60 seconds for the command to complete
+        local count=0
+        local timeout=60
+        while kill -0 $pid 2>/dev/null; do
+            if [ $count -ge $timeout ]; then
+                # Kill the hanging vmrun process
+                kill -9 $pid 2>/dev/null
+                break
+            fi
+            sleep 1
+            count=$((count+1))
+        done
+
+        # Verify snapshot exists regardless of vmrun exit status/timeout
+        # This handles cases where vmrun hangs but the snapshot is actually created
+        if vmrun -T fusion listSnapshots "$vmx_file" | grep -q "$snapshot_name"; then
             echo -e "${GREEN}OK${NC}"
         else
             echo -e "${RED}Failed${NC}"
@@ -1544,22 +1348,15 @@ delete_specific_snapshot() {
         VM_RUNNING=true
         echo -e "${CYAN}VM $VM_NAME is currently running.${NC}"
         echo -e "${CYAN}Some snapshots can only be deleted when the VM is powered off.${NC}"
-        echo -e "${CYAN}Do you want to power off the VM first? (y/n)${NC}"
-        read -p "" -n 1 -r
-        echo
         
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
+        if confirm_action "Do you want to power off the VM first?"; then
             echo -e "${CYAN}Shutting down VM...${NC}"
             vmrun -T fusion stop "$VMX_FILE" soft || true
             sleep 10
             
             # Check if VM is still running
             if vmrun -T fusion list | grep -q "$VMX_FILE"; then
-                echo -e "${RED}VM did not shutdown gracefully. Try force power off? (y/n)${NC}"
-                read -p "" -n 1 -r
-                echo
-                
-                if [[ $REPLY =~ ^[Yy]$ ]]; then
+                if confirm_action "VM did not shutdown gracefully. Try force power off?"; then
                     vmrun -T fusion stop "$VMX_FILE" hard || true
                     sleep 5
                     
@@ -1610,11 +1407,7 @@ delete_specific_snapshot() {
     
     # Confirm deletion
     echo -e "${RED}Warning: This will delete the snapshot '$SELECTED_SNAPSHOT' for VM $VM_NAME.${NC}"
-    echo -e "${CYAN}Are you sure you want to continue? (y/n)${NC}"
-    read -p "" -n 1 -r
-    echo
-    
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+    if ! confirm_action "Are you sure you want to continue?"; then
         echo -e "${CYAN}Deletion cancelled.${NC}"
         return
     fi
@@ -1635,13 +1428,9 @@ delete_specific_snapshot() {
     
     # Start VM if it was running and we powered it off
     if [ "$VM_RUNNING" = true ] && ! vmrun -T fusion list | grep -q "$VMX_FILE"; then
-        echo -e "${CYAN}Do you want to start the VM again? (y/n)${NC}"
-        read -p "" -n 1 -r
-        echo
-        
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
+        if confirm_action "Do you want to start the VM again?"; then
             echo -e "${CYAN}Starting VM...${NC}"
-            vmrun -T fusion start "$VMX_FILE"
+            vmrun -T fusion start "$VMX_FILE" gui
         fi
     fi
 }
@@ -1693,8 +1482,7 @@ rollback_to_snapshot() {
     echo -e "${CYAN}Selected snapshot: $snapshot_name${NC}"
     
     # Confirm rollback
-    read -p "Are you sure you want to rollback $vm_name to snapshot '$snapshot_name'? This cannot be undone. (yes/no): " confirm
-    if [[ "$confirm" != "yes" ]]; then
+    if ! confirm_action "Are you sure you want to rollback $vm_name to snapshot '$snapshot_name'? This cannot be undone."; then
         echo -e "${CYAN}Rollback aborted.${NC}"
         return 1
     fi
@@ -1704,10 +1492,9 @@ rollback_to_snapshot() {
     if vmrun -T fusion revertToSnapshot "$vmx_file" "$snapshot_name"; then
         echo -e "${GREEN}Successfully rolled back $vm_name to snapshot '$snapshot_name'.${NC}"
         # Optionally, start the VM after rollback?
-        read -p "Do you want to start the VM $vm_name now? (yes/no): " start_confirm
-        if [[ "$start_confirm" == "yes" ]]; then
+        if confirm_action "Do you want to start the VM $vm_name now?"; then
             echo -e "${CYAN}Starting VM $vm_name...${NC}"
-            vmrun -T fusion start "$vmx_file" || echo -e "${RED}Failed to start VM $vm_name.${NC}"
+            vmrun -T fusion start "$vmx_file" gui || echo -e "${RED}Failed to start VM $vm_name.${NC}"
         fi
         # IPs might change after rollback, advise user
         echo -e "${CYAN}Note: The IP address of $vm_name might have changed. Run option 3 (Check VM status) to verify.${NC}"
@@ -1724,8 +1511,7 @@ delete_all_snapshots() {
     
     cd "$PROJECT_DIR" || { echo -e "${RED}Error: Failed to change directory to $PROJECT_DIR${NC}"; exit 1; }
 
-    read -p "Are you sure you want to delete ALL snapshots for ALL VMs? This is irreversible. (yes/no): " confirm
-    if [[ "$confirm" != "yes" ]]; then
+    if ! confirm_action "Are you sure you want to delete ALL snapshots for ALL VMs? This is irreversible."; then
         echo -e "${CYAN}Deletion cancelled.${NC}"
         return 1
     fi
@@ -1741,19 +1527,53 @@ delete_all_snapshots() {
     local all_success=true
     echo -e "${CYAN}Deleting all snapshots for each VM...${NC}"
     for vmx_file in $VMX_FILES; do
-        vm_name=$(basename "$(dirname "$vmx_file")" | sed \'s/\\.vmwarevm//\')
-        echo -n "Deleting snapshots for $vm_name... "
-        # Check if snapshots exist before attempting deletion
-        if vmrun -T fusion listSnapshots "$vmx_file" | tail -n +2 | grep -q .; then
-            if vmrun -T fusion deleteAllSnapshots "$vmx_file"; then
-                echo -e "${GREEN}OK${NC}"
-            else
-                echo -e "${RED}Failed${NC}"
-                all_success=false
-            fi
-        else
-            echo -e "${CYAN}No snapshots found, skipping.${NC}"
-        fi
+                vm_name=$(basename "$(dirname "$vmx_file")" | sed 's/\.vmwarevm//')
+                echo -e "Processing $vm_name..."
+                
+                # Get list of snapshots
+                snapshots=$(vmrun -T fusion listSnapshots "$vmx_file" | tail -n +2)
+                
+                if [ -z "$snapshots" ]; then
+                     echo -e "${CYAN}  No snapshots found.${NC}"
+                     continue
+                fi
+        
+                # Loop through snapshots and delete them
+                while IFS= read -r snapshot; do
+                    if [ -z "$snapshot" ]; then continue; fi
+                    echo -n "  Deleting snapshot '$snapshot'... "
+                    
+                    # Run vmrun in background to handle potential hangs
+                    vmrun -T fusion deleteSnapshot "$vmx_file" "$snapshot" > /dev/null 2>&1 &
+                    local pid=$!
+                    
+                    # Wait up to 120 seconds per snapshot
+                    local count=0
+                    local timeout=120
+                    local killed=false
+                    while kill -0 $pid 2>/dev/null; do
+                        if [ $count -ge $timeout ]; then
+                            kill -9 $pid 2>/dev/null
+                            killed=true
+                            break
+                        fi
+                        sleep 1
+                        count=$((count+1))
+                    done
+        
+                    if [ "$killed" = true ]; then
+                         echo -e "${RED}Timeout (Killed)${NC}"
+                         all_success=false
+                    else
+                         # Verify deletion
+                         if vmrun -T fusion listSnapshots "$vmx_file" | grep -q "^$snapshot$"; then
+                             echo -e "${RED}Failed${NC}"
+                             all_success=false
+                         else
+                             echo -e "${GREEN}OK${NC}"
+                         fi
+                    fi
+                done <<< "$snapshots"
     done
 
     if [ "$all_success" = true ]; then
@@ -1771,8 +1591,7 @@ delete_all_vms() {
 
     cd "$PROJECT_DIR" || { echo -e "${RED}Error: Failed to change directory to $PROJECT_DIR${NC}"; exit 1; }
 
-    read -p "Are you sure you want to delete all VMs and cleanup related files (vm-ips.env, generated/, terraform state)? This is irreversible. (yes/no): " confirm
-    if [[ "$confirm" != "yes" ]]; then
+    if ! confirm_action "Are you sure you want to delete all VMs and cleanup related files (vm-ips.env, generated/, terraform state)? This is irreversible."; then
         echo -e "${CYAN}Deletion aborted.${NC}"
         return 1
     fi
@@ -1784,92 +1603,239 @@ delete_all_vms() {
     return 0 # Assuming remove_existing_vms exits on error or succeeds
 }
 
-# Function for full deployment workflow
+# Function for full deployment workflow (NEW two-stage automated approach)
 full_deployment_workflow() {
-    print_header "Full Kubernetes Cluster Deployment Workflow"
+    print_header "Automated Full Kubernetes Cluster Deployment Workflow"
     
     # Check prerequisites first
-    check_prerequisites || exit 1 # Exit if prereqs fail
+    check_prerequisites || exit 1
     
-    # Warn user about potential data loss
+    # --- Confirm potentially destructive action ---
     echo -e "${RED}Warning: This will remove any existing VMs in $VM_CLUSTER_DIR and deploy a new cluster.${NC}"
-    read -p "Do you want to proceed? (yes/no): " confirm
-    if [[ "$confirm" != "yes" ]]; then
+    if ! confirm_action "Do you want to proceed?"; then
         echo -e "${CYAN}Deployment aborted.${NC}"
         exit 0
     fi
 
-    # Remove existing VMs
+    # --- Stage 1: Create Minimal Base VMs ---
     remove_existing_vms
-
-    # Download base image if needed
     download_base_image
-    
-    # Create VMs (now parallelized)
-    create_vms || exit 1 # Exit if VM creation fails critically
-    
-    # Set up Terraform (this runs terraform-setup.sh)
-    setup_terraform || exit 1 # Exit if setup fails
+    create_vms || exit 1 # This now just launches minimal VMs
 
-    # --- Add Snapshot Step --- 
-    echo -e "\n${CYAN}VMs created and Terraform setup complete.${NC}"
-    read -p "Do you want to create a snapshot of the clean VMs before deploying Kubernetes? (yes/no): " create_snap_confirm
-    if [[ "$create_snap_confirm" == "yes" ]]; then
-        create_snapshots || {
+    # --- Wait for VMs to Boot and Reboot ---
+    local wait_time=240 # 4 minutes
+    echo -e "\n${CYAN}Waiting ${wait_time} seconds for all VMs to complete minimal cloud-init and reboot...${NC}"
+    sleep $wait_time
+
+    # --- Get Initial IPs (Best Effort) --- 
+    print_header "Attempting Initial IP Address Retrieval"
+    declare -A initial_vm_ips
+    local required_vm_names=("gateway1" "gateway2" "k8s-master1" "k8s-master2" "k8s-master3" "k8s-worker1" "k8s-worker2")
+    local all_ips_found=true
+    
+    for vm_name in "${required_vm_names[@]}"; do
+        local VMX_FILE="$VM_CLUSTER_DIR/${vm_name}.vmwarevm/${vm_name}.vmx"
+        local vm_ip=""
+        local attempts=0
+        local max_attempts=12 # Try for 2 minutes (12 * 10s)
+        echo -n "Getting IP for $vm_name... "
+        while [ -z "$vm_ip" ] && [ $attempts -lt $max_attempts ]; do
+            attempts=$((attempts+1))
+            vm_ip=$(vmrun -T fusion getGuestIPAddress "$VMX_FILE" -wait 2>/dev/null || echo "")
+            if [[ ! $vm_ip =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                 vm_ip=""
+                 sleep 10
+            fi
+        done
+        
+        if [ -z "$vm_ip" ]; then
+            echo -e "${RED}FAILED after $max_attempts attempts.${NC}"
+            all_ips_found=false
+        else
+            echo -e "${GREEN}OK ($vm_ip)${NC}"
+            initial_vm_ips["$vm_name"]=$vm_ip
+        fi
+    done
+    
+    if [ "$all_ips_found" = false ]; then
+        echo -e "${RED}Could not retrieve initial IP addresses for all VMs. Workflow cannot continue.${NC}"
+        echo -e "${CYAN}Check VM status in Fusion console. Password is in $PASSWORD_FILE.${NC}"
+        exit 1
+    fi
+    
+    # --- Stage 2: Configure VMs via Script (OS Update & Basic Setup) ---
+    print_header "Configuring VMs & Updating OS using ./configure-k8s-vm.sh"
+    local all_configured=true
+    chmod +x ./configure-k8s-vm.sh # Ensure executable
+    
+    # Export APT Cache IP for the configuration script
+    export K8S_APT_CACHE_SERVER_IP="$APT_CACHE_SERVER_IP"
+    
+    for vm_name in "${!initial_vm_ips[@]}"; do
+        local vm_ip=${initial_vm_ips[$vm_name]}
+        echo -e "\n--- Configuring $vm_name ($vm_ip) ---"
+        # Pass debug flag if needed
+        if ! ./configure-k8s-vm.sh "$vm_ip"; then
+            echo -e "${RED}Configuration FAILED for $vm_name ($vm_ip). Aborting workflow.${NC}"
+            all_configured=false
+            break # Stop configuration on first failure
+        fi
+        echo -e "--- Configuration successful for $vm_name ---"
+    done
+    
+    if [ "$all_configured" = false ]; then
+        exit 1
+    fi
+    
+    # --- Verify APT Cache Usage on one node ---
+    print_header "Verifying APT Cache Usage"
+    local test_node_ip=${initial_vm_ips["k8s-master1"]}
+    echo -e "${CYAN}Checking /etc/apt/apt.conf.d/01proxy on $test_node_ip...${NC}"
+    if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ubuntu@"$test_node_ip" "grep -q '$APT_CACHE_SERVER_IP' /etc/apt/apt.conf.d/01proxy"; then
+         echo -e "${GREEN}APT Proxy configuration verified.${NC}"
+    else
+         echo -e "${YELLOW}Warning: APT Proxy configuration NOT found on $test_node_ip. Proceeding but cache may not be used.${NC}"
+    fi
+    
+    # --- Get Final IPs (Reliable Check) ---
+    print_header "Verifying Final IP Addresses"
+    declare -A final_vm_ips
+    all_ips_found=true
+    
+    for vm_name in "${required_vm_names[@]}"; do
+        local VMX_FILE="$VM_CLUSTER_DIR/${vm_name}.vmwarevm/${vm_name}.vmx"
+        local vm_ip=""
+        local attempts=0
+        local max_attempts=6 # Should be fast now
+        echo -n "Getting final IP for $vm_name... "
+        while [ -z "$vm_ip" ] && [ $attempts -lt $max_attempts ]; do
+            attempts=$((attempts+1))
+            vm_ip=$(vmrun -T fusion getGuestIPAddress "$VMX_FILE" -wait 2>/dev/null || echo "")
+            if [[ ! $vm_ip =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                 vm_ip=""
+                 sleep 5
+            fi
+        done
+        
+        if [ -z "$vm_ip" ]; then
+            echo -e "${RED}FAILED after configuration! ($max_attempts attempts).${NC}"
+            all_ips_found=false
+        else
+            echo -e "${GREEN}OK ($vm_ip)${NC}"
+            final_vm_ips["$vm_name"]=$vm_ip
+        fi
+    done
+    
+    if [ "$all_ips_found" = false ]; then
+        echo -e "${RED}Could not retrieve final IP addresses for all VMs after configuration.${NC}"
+        exit 1
+    fi
+    
+    # --- Populate vm-ips.env ---
+    print_header "Populating vm-ips.env"
+    rm -f vm-ips.env
+    touch vm-ips.env
+    for vm_name in "${!final_vm_ips[@]}"; do
+         env_name=$(echo "$vm_name" | sed 's/k8s-//g')_ip
+         vm_ip=${final_vm_ips[$vm_name]}
+         echo "$env_name = \"$vm_ip\"" >> vm-ips.env
+    done
+    echo -e "${GREEN}vm-ips.env created:${NC}"
+    cat vm-ips.env
+    
+    # --- Snapshot Step ---
+    echo -e "\n${CYAN}VMs configured successfully.${NC}"
+    if confirm_action "Create snapshot of configured VMs before deploying Kubernetes?"; then
+        create_snapshots || { # create_snapshots already prompts for name
              echo -e "${RED}Snapshot creation failed. Halting deployment workflow.${NC}"
-             # Exit the script if snapshot creation fails when requested
              exit 1
         }
     else
         echo -e "${CYAN}Skipping snapshot creation.${NC}"
     fi
-    # --- End Snapshot Step ---
-
-    # Deploy Kubernetes using Terraform
-    deploy_kubernetes || exit 1 # Exit if deployment fails
     
-    # Display cluster information
+    # --- Terraform Setup ---
+    setup_terraform || exit 1 
+
+    # --- Deploy Kubernetes ---
+    deploy_kubernetes || exit 1 
+    
+    # --- Display Cluster Info ---
     display_cluster_info
     
-    echo -e "${GREEN}Full deployment workflow completed successfully!${NC}"
+    echo -e "\n${GREEN}Full deployment workflow completed successfully!${NC}"
 }
 
-# Main Menu
-while true; do
-    clear # Clear screen for better menu visibility
-    echo -e "${BLUE}=========================================================${NC}"
-    echo -e "${BLUE} Kubernetes Cluster Manager Menu ${NC}"
-    echo -e "${BLUE} Project Dir: $PROJECT_DIR ${NC}"
-    echo -e "${BLUE} VM Dir:      $VM_CLUSTER_DIR ${NC}"
-    echo -e "${BLUE}=========================================================${NC}"
-    echo "1.  Deploy Kubernetes Cluster (Full Workflow)"
-    echo "2.  Create all VMs and basic configuration (Staggered Parallel)" # Updated menu text
-    echo "3.  Check VM status and network configuration"
-    echo "4.  Create snapshots of all VMs"
-    echo "5.  List snapshots for all VMs"
-    echo "6.  Rollback a VM to a snapshot"
-    echo "7.  Delete all snapshots for all VMs"
-    echo "8.  Delete all VMs and cleanup"
-    echo "9.  Deploy Kubernetes on existing VMs (Terraform Apply)"
-    echo "10. Update VM IPs file (vm-ips.env)"
-    echo "11. Verify SSH connectivity to VMs"
-    echo "0.  Exit"
-    echo -e "${BLUE}=========================================================${NC}"
+# Function to update VM IPs in vm-ips.env
+update_vm_ips() {
+    print_header "Updating VM IPs"
+    
+    # Change to project directory
+    cd "$PROJECT_DIR" || { echo -e "${RED}Error: Failed to change directory to $PROJECT_DIR${NC}"; exit 1; }
+    
+    # Create empty vm-ips.env file
+    rm -f vm-ips.env
+    touch vm-ips.env
+    
+    local required_vms=("gateway1" "gateway2" "k8s-master1" "k8s-master2" "k8s-master3" "k8s-worker1" "k8s-worker2")
+    
+    for vm_name in "${required_vms[@]}"; do
+        local VMX_FILE="$VM_CLUSTER_DIR/${vm_name}.vmwarevm/${vm_name}.vmx"
+        
+        if [ ! -f "$VMX_FILE" ]; then
+            echo -e "${RED}Warning: VMX file not found for $vm_name${NC}"
+            continue
+        fi
+        
+        echo -n "Getting IP for $vm_name... "
+        vm_ip=$(vmrun -T fusion getGuestIPAddress "$VMX_FILE" -wait 2>/dev/null || echo "")
+        
+        if [[ $vm_ip =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo -e "${GREEN}OK ($vm_ip)${NC}"
+            env_name=$(echo "$vm_name" | sed 's/k8s-//g')_ip
+            echo "$env_name = \"$vm_ip\"" >> vm-ips.env
+        else
+            echo -e "${RED}FAILED${NC}"
+        fi
+    done
 
-    read -p "Enter your choice [0-11]: " choice
+    echo -e "${GREEN}Updated vm-ips.env:${NC}"
+    cat vm-ips.env
+}
 
+# Global variable for auto-confirmation
+AUTO_CONFIRM=false
+
+# Function to confirm actions
+confirm_action() {
+    local prompt="$1"
+    if [ "$AUTO_CONFIRM" = true ]; then
+        echo -e "${CYAN}$prompt [Auto-confirmed]${NC}"
+        return 0
+    fi
+    
+    read -p "$prompt (yes/no): " confirm
+    if [[ "$confirm" == "yes" ]]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Function to process a single menu choice
+process_choice() {
+    local choice=$1
     case $choice in
         1)
             full_deployment_workflow
             ;;
         2)
-            print_header "Creating VMs and Basic Configuration (Staggered Parallel)" # Updated header
+            print_header "Creating VMs and Basic Configuration (Staggered Parallel)"
             # Check prerequisites first
-            check_prerequisites || continue
+            check_prerequisites || return 1
             # Ask for confirmation as this is destructive
             echo -e "${RED}Warning: This will attempt to remove existing VMs in the cluster directory first.${NC}"
-            read -p "Are you sure you want to create new VMs? (yes/no): " confirm_create
-            if [[ "$confirm_create" == "yes" ]]; then
+            if confirm_action "Are you sure you want to create new VMs?"; then
                 remove_existing_vms
                 download_base_image
                 create_vms
@@ -1898,20 +1864,18 @@ while true; do
         9)
             print_header "Deploying Kubernetes on Existing VMs"
             # Check prerequisites first
-            check_prerequisites || continue
+            check_prerequisites || return 1
             # Ensure vm-ips.env exists and is populated
             if [ ! -f "vm-ips.env" ] || [ ! -s "vm-ips.env" ]; then
                  echo -e "${RED}Error: vm-ips.env is missing or empty. Run option 2 (Create VMs) or 10 (Update IPs) first.${NC}"
-                 continue # Return to menu
+                 return 1
             fi
             # Optionally run terraform setup if tfvars doesn't exist?
             if [ ! -f "terraform.tfvars" ]; then
                 echo -e "${CYAN}terraform.tfvars not found. Running Terraform setup...${NC}"
-                setup_terraform || continue # Return to menu if setup fails
+                setup_terraform || return 1
             fi
             deploy_kubernetes
-            # Don't display info here, deploy_kubernetes handles it and updates IPs
-            # display_cluster_info 
             ;;
         10) 
             update_vm_ips 
@@ -1924,12 +1888,77 @@ while true; do
             exit 0
             ;;
         *)
-            echo -e "${RED}Invalid choice. Please try again.${NC}"
+            echo -e "${RED}Invalid choice: $choice. Please try again.${NC}"
             ;;
     esac
+}
+
+# Main Menu
+main_menu() {
+    while true; do
+        clear # Clear screen for better menu visibility
+        echo -e "${BLUE}=========================================================${NC}"
+        echo -e "${BLUE} Kubernetes Cluster Manager Menu ${NC}"
+        echo -e "${BLUE} Project Dir: $PROJECT_DIR ${NC}"
+        echo -e "${BLUE} VM Dir:      $VM_CLUSTER_DIR ${NC}"
+        echo -e "${BLUE}=========================================================${NC}"
+        echo "1.  Deploy Kubernetes Cluster (Full Workflow)"
+        echo "2.  Create all VMs and basic configuration (Staggered Parallel)"
+        echo "3.  Check VM status and network configuration"
+        echo "4.  Create snapshots of all VMs"
+        echo "5.  List snapshots for all VMs"
+        echo "6.  Rollback a VM to a snapshot"
+        echo "7.  Delete all snapshots for all VMs"
+        echo "8.  Delete all VMs and cleanup"
+        echo "9.  Deploy Kubernetes on existing VMs (Terraform Apply)"
+        echo "10. Update VM IPs file (vm-ips.env)"
+        echo "11. Verify SSH connectivity to VMs"
+        echo "0.  Exit"
+        echo -e "${BLUE}=========================================================${NC}"
+
+        echo -n "Enter your choice [0-11]: "
+        read -r choice
+        process_choice "$choice"
+        
+        echo -e "\\n${CYAN}Press Enter to return to the menu...${NC}"
+        read -r
+    done
+}
+
+# Parse command line arguments
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    OPTIONS=""
     
-    echo -e "\\n${CYAN}Press Enter to return to the menu...${NC}"
-    read -r
-done
+    while [[ $# -gt 0 ]]; do
+        key="$1"
+        case $key in
+            -o|--option)
+                OPTIONS="$2"
+                shift # past argument
+                shift # past value
+                ;;
+            -y|--yes)
+                AUTO_CONFIRM=true
+                shift # past argument
+                ;;
+            *)    # unknown option
+                shift # past argument
+                ;;
+        esac
+    done
+
+    if [ -n "$OPTIONS" ]; then
+        # Split options by comma
+        IFS=',' read -ra OPT_ARRAY <<< "$OPTIONS"
+        for opt in "${OPT_ARRAY[@]}"; do
+            echo -e "${BLUE}Executing option: $opt${NC}"
+            process_choice "$opt"
+        done
+    else
+        main_menu
+    fi
+fi
+
 
 # End of script
+

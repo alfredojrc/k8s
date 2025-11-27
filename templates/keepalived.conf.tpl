@@ -1,10 +1,10 @@
 global_defs {
-    router_id HAPROXY${priority == 101 ? "1" : "2"}
+    router_id GATEWAY${priority == 101 ? "1" : "2"}
     enable_script_security
 }
 
-vrrp_script check_haproxy {
-    script "/usr/bin/killall -0 haproxy"
+vrrp_script check_nginx {
+    script "/usr/bin/killall -0 nginx"
     interval 2
     weight 2
 }
@@ -23,6 +23,6 @@ vrrp_instance VI_1 {
         ${virtual_ip}/24
     }
     track_script {
-        check_haproxy
+        check_nginx
     }
 } 

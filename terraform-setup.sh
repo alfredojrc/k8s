@@ -20,18 +20,11 @@ fi
 
 # Create terraform.tfvars file
 echo -e "${YELLOW}Creating terraform.tfvars file${NC}"
-cat > terraform.tfvars << EOF
-# VM IP addresses
-haproxy1_ip = "$(grep haproxy1_ip vm-ips.env | cut -d '"' -f 2)"
-haproxy2_ip = "$(grep haproxy2_ip vm-ips.env | cut -d '"' -f 2)"
-master1_ip = "$(grep master1_ip vm-ips.env | cut -d '"' -f 2)"
-master2_ip = "$(grep master2_ip vm-ips.env | cut -d '"' -f 2)"
-master3_ip = "$(grep master3_ip vm-ips.env | cut -d '"' -f 2)"
-worker1_ip = "$(grep worker1_ip vm-ips.env | cut -d '"' -f 2)"
-worker2_ip = "$(grep worker2_ip vm-ips.env | cut -d '"' -f 2)"
+cat vm-ips.env > terraform.tfvars
+cat >> terraform.tfvars << EOF
 
 # Network configuration
-virtual_ip = "10.10.0.100"
+virtual_ip = "192.168.68.200"
 network_interface = "ens160"
 pod_network_cidr = "10.244.0.0/16"
 service_cidr = "10.96.0.0/12"
@@ -41,11 +34,14 @@ ssh_private_key_path = "~/.ssh/id_ed25519"
 ssh_username = "ubuntu"
 
 # Kubernetes configuration
-kubernetes_version = "1.29.0"
-cilium_version = "1.14.4"
+kubernetes_version = "1.31.0"
+cilium_version = "1.16.1"
 
-# HAProxy configuration
-haproxy_stats_credentials = "admin:admin"
+# Gateway configuration
+gateway_stats_credentials = "admin:admin"
+
+# APT Proxy
+apt_proxy_url = "${K8S_APT_CACHE_SERVER_IP:+http://$K8S_APT_CACHE_SERVER_IP:3142}"
 EOF
 
 echo -e "${GREEN}terraform.tfvars file created successfully${NC}"

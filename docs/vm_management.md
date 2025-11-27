@@ -1,211 +1,140 @@
-# VM Management Documentation
+# VM Management & Provisioning Guide
 
 ## Overview
 
-The VM management functionality in k8s-manager.sh provides tools for creating, configuring, monitoring, and controlling the virtual machines that make up your Kubernetes cluster. This documentation covers how to use these features effectively.
+This document details the lifecycle management of Virtual Machines in the Kubernetes cluster, including provisioning strategies, configuration via `cloud-init`, network setup, and snapshot operations.
 
-## Table of Contents
+The primary tool for these operations is the `k8s-manager.sh` script.
 
-1. [Creating VMs](#creating-vms)
-2. [VM Configuration](#vm-configuration)
-3. [Checking VM Status](#checking-vm-status)
-4. [Power Management](#power-management)
-5. [IP Address Management](#ip-address-management)
-6. [Removing VMs](#removing-vms)
-7. [Best Practices](#best-practices)
-8. [Troubleshooting](#troubleshooting)
+## 1. Provisioning Strategy (Cloning)
 
-## Creating VMs
+We utilize a **"Golden Image"** cloning strategy based on official Ubuntu Cloud Images. This ensures consistency and speed.
 
-The script provides options to create the complete set of VMs needed for a Kubernetes cluster.
+### The Process
+1.  **Base Image Acquisition**: The script downloads the official `Ubuntu 24.04 LTS (Noble Numbat)` Cloud Image (`.img` or `.iso`) to `base_images/`.
+2.  **Disk Cloning**: For each new VM (e.g., `gateway1`, `k8s-master1`):
+    *   A new VM directory is created (`VMs/k8s_cluster/<name>.vmwarevm`).
+    *   The base image is converted and cloned into a fresh `.vmdk` disk using `qemu-img convert`.
+    *   The disk is resized to the target size (default: 40GB).
+3.  **VM Definition**: A custom `.vmx` file is generated defining CPU (2-4 vCPU), RAM (2-4GB), and network interfaces.
 
-### Creating All VMs
+### Why this approach?
+*   **Speed**: Cloning a disk image is faster than running a standard OS installer.
+*   **Consistency**: Every VM starts from the exact same bit-for-bit OS state.
+*   **Automation**: Completely scriptable without user intervention.
 
-To create all the VMs for your Kubernetes cluster:
+## 2. Configuration (Cloud-Init)
 
-1. From the main menu, select option 2: "Create all VMs and basic configuration"
-2. The script will:
-   - Download the base image if needed
-   - Create the following VMs:
-     - HAProxy load balancers (haproxy1, haproxy2)
-     - Kubernetes master nodes (k8s-master1, k8s-master2, k8s-master3)
-     - Kubernetes worker nodes (k8s-worker1, k8s-worker2)
-   - Configure each VM with cloud-init
-   - Start each VM and wait for it to boot
+We use `cloud-init` to bootstrap the VMs on their first boot. This "personalizes" the cloned image.
 
-### VM Creation Process
+### Configuration File
+A `user-data` ISO is generated and attached to each VM. This configuration handles:
 
-The VM creation process includes:
+*   **Hostname**: Sets the unique hostname (e.g., `k8s-master1`).
+*   **User Accounts**: Creates the `ubuntu` user and configures `sudo` access (passwordless).
+*   **SSH Access**: Injects your local public key (`~/.ssh/id_ed25519.pub`) into `~/.ssh/authorized_keys`.
+*   **Packages**: Installs essential tools:
+    *   `open-vm-tools` (VMware integration)
+    *   `qemu-guest-agent`
+    *   `curl`, `wget`, `vim`
+    *   `nginx` / `keepalived` (for Gateways)
 
-1. Base image check or download
-2. Disk creation from the base image
-3. Cloud-init configuration generation
-4. VMX file creation
-5. VM startup
-6. Recording VM IP addresses
+### Customizing Cloud-Init
+You can modify the templates in `templates/cloud-init-*.yaml` to change the default bootstrap configuration.
 
-## VM Configuration
+## 3. Network Setup
 
-Each VM is configured with:
+### Network Architecture
+The cluster uses a **Dual-Homed DMZ** design with vmnet2 for internal cluster communication:
 
-- **CPU & Memory**: 
-  - HAProxy VMs: 2 CPUs, 2GB RAM
-  - Master nodes: 4 CPUs, 4GB RAM
-  - Worker nodes: 4 CPUs, 4GB RAM
+| VM Type | Interface | Network | IP Range |
+|---------|-----------|---------|----------|
+| Gateway | ens160 | Bridged (LAN) | 192.168.68.x |
+| Gateway | ens192 | vmnet2 (Internal) | 10.10.0.x |
+| K8s Node | ens160 | vmnet2 (Internal) | 10.10.0.x |
 
-- **Disk**: 40GB disk by default (configurable)
+### Initial Boot (DHCP)
+1.  On first boot, VMs request an IP address from the VMware Fusion DHCP server (vmnet2).
+2.  The script waits for the VM to report an IP via `vmrun getGuestIPAddress`.
+3.  This initial IP is captured and stored in `vm-ips.env`.
 
-- **Network**: NAT networking with DHCP
-
-- **Authentication**: 
-  - SSH key-based authentication using your ~/.ssh/id_ed25519.pub key
-  - Ubuntu user with sudo privileges
-  - Random password (stored in ~/.k8s_password)
-
-- **Software**:
-  - Ubuntu 24.04 LTS (Noble) base OS
-  - Pre-installed packages: qemu-guest-agent, net-tools, curl, wget, vim, htop, tmux, bash-completion
-
-## Checking VM Status
-
-To check the status of your VMs:
-
-1. From the main menu, select option 3: "Check VM status and network configuration"
-2. The script will display:
-   - Which VMs are running or stopped
-   - The IP address of each running VM
-   - Network interface information from within each VM
-   - A validation of the vm-ips.env file against running VMs
-
-Example output:
-
+### vmnet2 Configuration
 ```
-Checking VM status and network configuration
-
-VM cluster directory: /Users/alf/VMs/k8s_cluster
-
-VM IP Addresses from vm-ips.env:
-haproxy1_ip: "192.168.64.10"
-haproxy2_ip: "192.168.64.11"
-master1_ip: "192.168.64.20"
-master2_ip: "192.168.64.21"
-master3_ip: "192.168.64.22"
-worker1_ip: "192.168.64.30"
-worker2_ip: "192.168.64.31"
-
-Checking VM status and network configuration:
-
-VM: haproxy1
-VM path: /Users/alf/VMs/k8s_cluster/haproxy1.vmwarevm
-VMX file: /Users/alf/VMs/k8s_cluster/haproxy1.vmwarevm/haproxy1.vmx
-Status: Running
-IP address: 192.168.64.10
-...
+Network: 10.10.0.0/24
+DHCP Range: 10.10.0.128 - 10.10.0.254
+NAT Gateway: 10.10.0.2 (provides internet access)
+Host IP: 10.10.0.1 (Mac)
 ```
 
-## Power Management
+### Static Configuration (Terraform)
+While the VMs boot with DHCP, Terraform is configured to treat these IPs as stable resources.
+*   **External VIP**: `192.168.68.200` on LAN (Keepalived on Gateways).
+*   **Internal VIP**: `10.10.0.100` for K8s API endpoint.
+*   **DNS**: The `systemd-resolved` configuration is managed to ensure consistent DNS resolution.
 
-The script provides options to power on and shut down your VMs.
+## 4. APT Package Caching
 
-### Power On All VMs
+The environment includes a dedicated **APT Cache Server** for faster provisioning.
 
-To power on all VMs:
+*   **Server VM**: `apt-cache-server`
+*   **IP**: `10.10.0.148` (on vmnet2)
+*   **Port**: `3142`
+*   **Service**: `apt-cacher-ng`
 
-1. From the main menu, select option 7: "Power on all VMs"
-2. The script will:
-   - Check for VMs in the VM_CLUSTER_DIR
-   - Start any VM that is not already running
-   - Show progress for each VM
+### Current Status (2025-11-25)
 
-### Shutdown All VMs
+✅ **Fully Operational**: The APT cache server has been migrated to **vmnet2** (10.10.0.0/24) and is now accessible to all K8s cluster VMs.
 
-To shut down all VMs:
+**Configuration**:
+- All K8s VMs configured with APT proxy in `/etc/apt/apt.conf.d/01proxy`
+- Cache storage: `/var/cache/apt-cacher-ng` (~314MB cached)
+- Internet access via NAT gateway (10.10.0.2)
 
-1. From the main menu, select option 8: "Shutdown all VMs"
-2. Confirm the shutdown when prompted
-3. The script will:
-   - Find all running VMs
-   - Attempt a graceful shutdown of each VM
-   - Offer to force power off any VM that doesn't shut down gracefully
+### Client Configuration
+All VMs are configured with `/etc/apt/apt.conf.d/01proxy`:
 
-## IP Address Management
+```bash
+Acquire::http::Proxy "http://10.10.0.148:3142";
+```
 
-The script provides an option to update VM IP addresses.
+### Verifying Cache Usage
+Check apt-cacher-ng logs to confirm packages are being served from cache:
+```bash
+ssh ubuntu@10.10.0.148 'sudo tail -20 /var/log/apt-cacher-ng/apt-cacher.log'
+```
 
-### Update VM IP Addresses
+## 5. Snapshot Management
 
-To update VM IP addresses:
+Snapshots are critical for safe experimentation. The `k8s-manager.sh` script provides robust snapshot tools.
 
-1. From the main menu, select option 9: "Update VM IP addresses"
-2. The script will:
-   - Check each VM for its current IP address
-   - Update the vm-ips.env file with the current IP addresses
-   - Display the updated IP addresses
+| Feature | Menu Option | Description |
+|---------|-------------|-------------|
+| **Create** | 4 | Creates a consistent snapshot across ALL cluster VMs simultaneously. |
+| **List** | 5 | Displays a table of all snapshots and their status per VM. |
+| **Rollback** | 6 | Reverts a specific VM (or all) to a previous state. |
+| **Delete** | 7 | Removes snapshots to free up disk space. |
 
-This is particularly useful after:
-- Creating new VMs
-- Restarting VMs
-- Network changes
-- Before deploying Kubernetes
+### Current Snapshots (2025-11-25)
 
-## Removing VMs
+All VMs have a clean, patched snapshot:
 
-To remove all VMs:
+| VM | Snapshot Name | Description |
+|----|---------------|-------------|
+| gateway1 | `patched-20251125` | Fully patched Ubuntu 24.04 |
+| gateway2 | `patched-20251125` | Fully patched Ubuntu 24.04 |
+| k8s-master1 | `patched-20251125` | Fully patched Ubuntu 24.04 |
+| k8s-master2 | `patched-20251125` | Fully patched Ubuntu 24.04 |
+| k8s-master3 | `patched-20251125` | Fully patched Ubuntu 24.04 |
+| k8s-worker1 | `patched-20251125` | Fully patched Ubuntu 24.04 |
+| k8s-worker2 | `patched-20251125` | Fully patched Ubuntu 24.04 |
 
-1. From the main menu, select option 5: "Delete all VMs"
-2. The script will:
-   - Stop any running VMs
-   - Remove the VM directory
-   - Clean up related files (vm-ips.env, generated directory, Terraform state)
+**Snapshot Policy**: Maintain only ONE snapshot per VM to conserve disk space. Delete old snapshots before creating new ones.
 
-## Best Practices
+**Note on GUI Hangs**: VMware Fusion's `vmrun snapshot` command can sometimes hang when the GUI is open. The script includes a timeout mechanism to handle this safely in the background.
 
-1. **VM Creation**:
-   - Create all VMs at once for a consistent environment
-   - Allow time for VMs to fully boot before using them
-   - Verify VM connectivity before deployment
+## 6. Removing VMs
 
-2. **Resource Allocation**:
-   - Ensure your host has enough resources for all VMs
-   - Adjust CPU, memory, and disk configuration if needed
-
-3. **Network Configuration**:
-   - Update VM IP addresses after any network changes
-   - Verify network connectivity between VMs
-
-4. **VM Management**:
-   - Use graceful shutdown when possible
-   - Take snapshots before making major changes
-
-## Troubleshooting
-
-### Common Issues and Solutions
-
-1. **VM Creation Fails**
-   - Check disk space on your host machine
-   - Verify the base image is accessible
-   - Check for permissions issues in the VM directory
-
-2. **VM Won't Start**
-   - Check VMware Fusion is running properly
-   - Verify the VMX file exists and is valid
-   - Check your host has enough resources
-
-3. **VM Network Issues**
-   - Update VM IP addresses to get current IPs
-   - Check VMware Fusion networking settings
-   - Verify the VM's network adapter is properly configured
-
-4. **VM Performance Issues**
-   - Check resource allocation (CPU, memory)
-   - Look for disk space issues
-   - Consider snapshots that may be impacting performance
-
-### Debugging Tools
-
-The script provides several tools for troubleshooting:
-
-1. **Check VM Status**: Use option 3 to get detailed information about each VM
-2. **Update VM IPs**: Use option 9 to refresh IP address information
-3. **VM Directory**: Examine the VM files in /Users/alf/VMs/k8s_cluster
-4. **Logs**: Check VMware Fusion logs for VM-specific issues 
+To decommission the cluster:
+*   **Option 8** in `k8s-manager.sh`: "Delete all VMs".
+*   This performs a "Hard Stop", deletes the VM files from disk, and unregisters them from VMware Fusion.
+*   It also cleans up `generated/` configs and Terraform state.
