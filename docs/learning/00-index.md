@@ -29,6 +29,7 @@ pie title CKA Exam Weight Distribution
 | [Installation Deep Dive](06-installation-deep-dive.md) | Complete 8-phase installation guide with CKA failure scenarios |
 | [CKA 2025 New Topics](07-cka-2025-new-topics.md) | **NEW** Helm, Kustomize, HPA/VPA, CRDs, CNI/CSI/CRI, etcdutl |
 | [Resource Management](08-resource-management.md) | **NEW** Namespaces, ResourceQuotas, LimitRanges, PDBs, Probes |
+| [Practice Exam Questions](09-practice-exam-questions.md) | **NEW** 71 hands-on scenarios organized by domain |
 
 ## Study Path
 
