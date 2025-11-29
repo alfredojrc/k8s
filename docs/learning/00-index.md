@@ -120,7 +120,7 @@ This documentation is tailored for your specific cluster:
 | **CNI** | Cilium v1.18+ |
 | **Ingress** | Gateway API (Cilium) |
 | **Network** | vmnet2 (10.10.0.0/24) |
-| **VIP** | 192.168.68.200 |
+| **VIP** | 192.168.68.210 |
 
 ## Essential kubectl Commands
 

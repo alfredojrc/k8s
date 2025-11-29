@@ -13,7 +13,7 @@ The cluster uses a **Dual-Homed DMZ** architecture with:
 graph LR
     subgraph "LAN (192.168.68.0/24)"
         User((User))
-        VIP["VIP<br/>192.168.68.200"]
+        VIP["VIP<br/>192.168.68.210"]
     end
 
     subgraph "Gateway Layer"
@@ -31,7 +31,7 @@ graph LR
         Pod2[Pod]
     end
 
-    User -->|"https://192.168.68.200"| VIP
+    User -->|"https://192.168.68.210"| VIP
     VIP --> GW
     GW -->|"10.10.0.131-133"| API
     GW -->|"10.10.0.141-142"| HTTPS
@@ -47,7 +47,7 @@ graph LR
 ```
 User on Home LAN requests https://myapp.local
         ↓
-DNS resolves to 192.168.68.200 (VIP)
+DNS resolves to 192.168.68.210 (VIP)
         ↓
 Packet arrives at Active Gateway's Bridged Interface (ens160)
 ```
@@ -91,7 +91,7 @@ Forwards to target Pod IP
 | Purpose | Description |
 |---------|-------------|
 | External Access | Users access cluster via VIP |
-| Gateway VIP | 192.168.68.200 managed by Keepalived |
+| Gateway VIP | 192.168.68.210 managed by Keepalived |
 | Internet | Direct internet access for Gateways |
 
 ### Internal Segment (vmnet2 - 10.10.0.0/24)
@@ -217,7 +217,7 @@ cat /etc/resolv.conf
 │                       192.168.68.0/24                                │
 │                                                                      │
 │    ┌──────────────┐                    ┌──────────────────────┐     │
-│    │    User PC   │ ──────────────────▶│  VIP: 192.168.68.200 │     │
+│    │    User PC   │ ──────────────────▶│  VIP: 192.168.68.210 │     │
 │    └──────────────┘                    └──────────┬───────────┘     │
 │                                                   │                  │
 └───────────────────────────────────────────────────┼──────────────────┘

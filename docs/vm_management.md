@@ -68,7 +68,7 @@ Host IP: 10.10.0.1 (Mac)
 
 ### Static Configuration (Terraform)
 While the VMs boot with DHCP, Terraform is configured to treat these IPs as stable resources.
-*   **External VIP**: `192.168.68.200` on LAN (Keepalived on Gateways).
+*   **External VIP**: `192.168.68.210` on LAN (Keepalived on Gateways).
 *   **Internal VIP**: `10.10.0.100` for K8s API endpoint.
 *   **DNS**: The `systemd-resolved` configuration is managed to ensure consistent DNS resolution.
 

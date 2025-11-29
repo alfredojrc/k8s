@@ -18,7 +18,7 @@ write_files:
           ens160:
             dhcp4: true
             # This is the Bridged (LAN) interface - 192.168.68.x
-            # VIP (192.168.68.200) is hosted on this interface
+            # VIP (192.168.68.210) is hosted on this interface
           ens192:
             dhcp4: true
             # This is the vmnet2 (Internal Cluster) interface - 10.10.0.x

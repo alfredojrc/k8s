@@ -8,7 +8,7 @@ This project implements a "Dual-Homed" network architecture to secure the Kubern
 graph TB
     subgraph "Home Network (LAN)"
         LAN[("192.168.68.0/24")]
-        VIP[("VIP: 192.168.68.200")]
+        VIP[("VIP: 192.168.68.210")]
         User((User))
     end
 
@@ -83,7 +83,7 @@ graph TB
 | Property | Value |
 |----------|-------|
 | **VRRP Interface** | `ens160` (Bridged Interface) |
-| **VIP** | `192.168.68.200` |
+| **VIP** | `192.168.68.210` |
 | **Failover** | If Gateway 1 fails, Gateway 2 claims the VIP |
 
 ### 4. Load Balancing (Nginx)
@@ -94,9 +94,9 @@ Nginx listens on all interfaces (0.0.0.0) and serves traffic via the VIP.
 
 | Traffic Type | LAN Endpoint | Backend (vmnet2) |
 |--------------|--------------|------------------|
-| K8s API | 192.168.68.200:6443 | 10.10.0.131-133:6443 |
-| HTTPS Ingress | 192.168.68.200:443 | 10.10.0.141-142:30443 |
-| HTTP Ingress | 192.168.68.200:80 | 10.10.0.141-142:30080 |
+| K8s API | 192.168.68.210:6443 | 10.10.0.131-133:6443 |
+| HTTPS Ingress | 192.168.68.210:443 | 10.10.0.141-142:30443 |
+| HTTP Ingress | 192.168.68.210:80 | 10.10.0.141-142:30080 |
 
 ## VMware Fusion Network Configuration
 
@@ -154,7 +154,7 @@ ethernet0.vnet = "vmnet2"
 |----|------|---------|
 | 192.168.68.201 | gateway1 | Gateway 1 LAN interface |
 | 192.168.68.202 | gateway2 | Gateway 2 LAN interface |
-| **192.168.68.200** | **VIP** | **Virtual IP (Keepalived)** |
+| **192.168.68.210** | **VIP** | **Virtual IP (Keepalived)** |
 
 ### Internal Network (10.10.0.0/24 - vmnet2)
 
@@ -174,7 +174,7 @@ ethernet0.vnet = "vmnet2"
 ## Traffic Flow
 
 ```
-User Request → 192.168.68.200 (VIP)
+User Request → 192.168.68.210 (VIP)
                     ↓
               Gateway (Nginx)
                     ↓

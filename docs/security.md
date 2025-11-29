@@ -225,7 +225,7 @@ ssh ubuntu@192.168.68.201 'sudo systemctl restart keepalived'
 ssh ubuntu@192.168.68.202 'sudo systemctl restart keepalived'
 
 # Verify VIP failover works
-ping 192.168.68.200
+ping 192.168.68.210
 ```
 
 **Qdrant**:
@@ -242,7 +242,7 @@ curl -H "api-key: ${QDRANT_API_KEY}" http://localhost:6335/collections
 **4. Verify Access**:
 ```bash
 # Test gateway stats (if enabled)
-curl -u "${GATEWAY_STATS_CREDENTIALS}" http://192.168.68.200/stats
+curl -u "${GATEWAY_STATS_CREDENTIALS}" http://192.168.68.210/stats
 
 # Test Qdrant
 curl -H "api-key: ${QDRANT_API_KEY}" http://localhost:6335/collections
@@ -364,7 +364,7 @@ K8s Cluster (control plane + workers)
 - K8s nodes not directly accessible from LAN
 - All external traffic filtered through gateways
 - Gateway compromise doesn't expose internal network credentials
-- VIP (192.168.68.200) provides single attack surface
+- VIP (192.168.68.210) provides single attack surface
 
 ---
 
@@ -434,7 +434,7 @@ K8s Cluster (control plane + workers)
 **Weekly**:
 - [ ] Review failed SSH attempts: `sudo grep "Failed password" /var/log/auth.log`
 - [ ] Check for unauthorized sudo usage: `sudo grep -i "sudo" /var/log/auth.log`
-- [ ] Verify VIP status: `ip addr show | grep 192.168.68.200`
+- [ ] Verify VIP status: `ip addr show | grep 192.168.68.210`
 
 **Monthly**:
 - [ ] Credential rotation review (are rotations on schedule?)

@@ -8,14 +8,14 @@ The cluster uses a secure "Dual-Homed" network design with dedicated internal ne
 
 *   **Gateways**: Sit on the "Edge". They have one interface on your Home LAN (`192.168.68.x`) and one on the Internal Cluster Network (`10.10.0.x` via vmnet2).
 *   **Cluster Nodes**: Reside entirely on the Internal Network (`10.10.0.x`), isolated from the LAN.
-*   **Access**: User traffic hits the **VIP (192.168.68.200)** on the LAN, and is proxied by Nginx to the internal nodes.
+*   **Access**: User traffic hits the **VIP (192.168.68.210)** on the LAN, and is proxied by Nginx to the internal nodes.
 
 ```mermaid
 graph TD
     User((User/LAN))
 
     subgraph "Home Network (192.168.68.0/24)"
-        VIP[("VIP: 192.168.68.200")]
+        VIP[("VIP: 192.168.68.210")]
     end
 
     subgraph "Gateway Layer (Dual-Homed)"
@@ -64,7 +64,7 @@ graph TD
 
 | Host | LAN IP | Internal IP | Role | Snapshot |
 |------|--------|-------------|------|----------|
-| VIP | 192.168.68.200 | - | External access point | - |
+| VIP | 192.168.68.210 | - | External access point | - |
 | gateway1 | 192.168.68.201 | 10.10.0.146 | Load balancer (MASTER) | `patched-20251125` |
 | gateway2 | 192.168.68.202 | 10.10.0.147 | Load balancer (BACKUP) | `patched-20251125` |
 | k8s-master1 | - | 10.10.0.141 | Control plane | `patched-20251125` |
@@ -78,10 +78,10 @@ graph TD
 
 | Service | Endpoint | Access From | Description |
 |---------|----------|-------------|-------------|
-| **Cluster VIP** | `192.168.68.200` | **LAN** | Entry point for all services |
-| **K8s API** | `https://192.168.68.200:6443` | **LAN** | Kubernetes Control Plane |
-| **HTTPS Ingress** | `https://192.168.68.200:443` | **LAN** | App Traffic (Passthrough) |
-| **HTTP Ingress** | `http://192.168.68.200:80` | **LAN** | App Traffic (Forwarded) |
+| **Cluster VIP** | `192.168.68.210` | **LAN** | Entry point for all services |
+| **K8s API** | `https://192.168.68.210:6443` | **LAN** | Kubernetes Control Plane |
+| **HTTPS Ingress** | `https://192.168.68.210:443` | **LAN** | App Traffic (Passthrough) |
+| **HTTP Ingress** | `http://192.168.68.210:80` | **LAN** | App Traffic (Forwarded) |
 
 ## Deployment Process
 
@@ -89,7 +89,7 @@ graph TD
 *   VMware Fusion Pro 13+
 *   vmnet2 configured in VMware Fusion (10.10.0.0/24 with NAT)
 *   A LAN network subnet `192.168.68.0/24` (or modify Terraform vars)
-*   Free IP `192.168.68.200` for the VIP
+*   Free IP `192.168.68.210` for the VIP
 
 ### Quick Start
 ```bash
@@ -112,7 +112,7 @@ If you have existing VMs on vmnet8, migrate them:
 From your laptop (on the same LAN):
 ```bash
 # Configure kubectl to talk to the VIP
-kubectl config set-cluster my-cluster --server=https://192.168.68.200:6443 --insecure-skip-tls-verify
+kubectl config set-cluster my-cluster --server=https://192.168.68.210:6443 --insecure-skip-tls-verify
 
 # Or copy kubeconfig from a master node
 scp ubuntu@10.10.0.131:~/.kube/config ~/.kube/config

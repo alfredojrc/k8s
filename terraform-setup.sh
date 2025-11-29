@@ -24,7 +24,7 @@ cat vm-ips.env > terraform.tfvars
 cat >> terraform.tfvars << EOF
 
 # Network configuration
-virtual_ip = "192.168.68.200"
+virtual_ip = "192.168.68.210"
 network_interface = "ens160"
 pod_network_cidr = "10.244.0.0/16"
 service_cidr = "10.96.0.0/12"

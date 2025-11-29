@@ -199,7 +199,7 @@ variable "worker2_ip" {
 variable "virtual_ip" {
   description = "Virtual IP address for the Gateway load balancer (LAN-facing VIP)"
   type        = string
-  default     = "192.168.68.200"  # External VIP on LAN for user access
+  default     = "192.168.68.210"  # External VIP on LAN for user access
   # Note: Internal K8s API endpoint uses 10.10.0.100 on vmnet2
 }
 
